@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "messreq",
+  "project_id": "e532abfd-09ea-4002-89f4-ff76df1701a9"
+}

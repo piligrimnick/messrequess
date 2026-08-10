@@ -1,0 +1,34 @@
+# Сборка
+/target
+
+# Изолированные worktree агентов
+.claude/worktrees/
+
+# Локальные настройки инструментов (машинно-зависимые)
+.claude/settings.local.json
+.codex/*.local.*
+
+# Остатки разрешения конфликтов
+*.orig
+*.rej
+
+# macOS
+.DS_Store
+._*
+
+# Редакторы
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
+
+# Local beads activity log: per-machine, duplicates the Dolt history,
+# and conflicts on every merge
+.beads/interactions.jsonl
