@@ -163,8 +163,8 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     }
     loop {
         let mut h = 0u16;
-        for i in app.top..=sel_unit {
-            h = h.saturating_add(units[i].1);
+        for (i, (_, unit_h)) in units.iter().enumerate().take(sel_unit + 1).skip(app.top) {
+            h = h.saturating_add(*unit_h);
             if i < sel_unit {
                 h = h.saturating_add(GAP);
             }

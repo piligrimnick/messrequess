@@ -1,0 +1,79 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# A pull request from a branch of this same repository fires both `push` and
+# `pull_request`. Both events resolve the expression below to the branch name,
+# so the second run cancels the first instead of paying twice for the same checks.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
+
+# The job only reads the repository. Spelling that out keeps the automatic
+# GITHUB_TOKEN read-only regardless of the repository-wide default.
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: fmt, clippy, test, release build
+    # The dashboard targets macOS at runtime — it shells out to osascript, launchd
+    # and it2 — but nothing here needs a Mac: every external program is invoked
+    # through std::process::Command, and the only dependencies are ratatui and
+    # serde_json. Ubuntu minutes are ten times cheaper than macOS ones.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # The runner image ships a stable toolchain; clippy and rustfmt are added
+      # explicitly so the job does not depend on which components the image has.
+      - name: Set up the toolchain
+        id: toolchain
+        run: |
+          rustup component add clippy rustfmt
+          rustc --version
+          cargo --version
+          cargo clippy --version
+          cargo fmt --version
+          echo "rustc=$(rustc --version | tr ' ()' '---')" >> "$GITHUB_OUTPUT"
+
+      # The commit sha is part of the key on purpose: actions/cache only writes on
+      # a primary-key miss, so a key built from Cargo.lock alone would freeze
+      # `target/` at whatever the first run produced and never refresh it. The
+      # restore-keys walk back to the newest cache for the same lockfile, then to
+      # the same toolchain. The toolchain version stays in every key — a `target/`
+      # built by a different rustc is discarded by cargo anyway, so restoring it
+      # would only cost download time.
+      - name: Cache cargo registry and build artefacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}-
+            cargo-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      # `--locked` on everything that resolves dependencies: Cargo.lock is committed,
+      # and a run that silently re-resolved it would be testing a dependency set
+      # nobody has locally.
+      - name: Clippy
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Tests
+        run: cargo test --locked
+
+      - name: Release build
+        run: cargo build --release --locked

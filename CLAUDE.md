@@ -96,9 +96,22 @@ cargo build --release     # ~/.local/bin/mrdash is a symlink to target/release/m
                           # so a release build is a deploy
 cargo run                 # run the TUI from sources
 cargo fmt
-cargo clippy              # NOT installed in this environment:
+cargo clippy --all-targets -- -D warnings
+                          # if the component is missing:
                           # rustup component add clippy
 ```
+
+CI runs on GitHub Actions (`.github/workflows/ci.yml`) on every push and pull request:
+`cargo fmt --all -- --check`, then `cargo clippy --all-targets -- -D warnings`, then
+`cargo test`, then `cargo build --release`. Clippy is strict — one warning fails the
+build — so run it locally before pushing. The runner is `ubuntu-latest` even though the
+tool targets macOS: every external program goes through `std::process::Command`, so
+nothing in the build or the tests needs a Mac, and Ubuntu minutes are ten times cheaper.
+
+The toolchain is whatever stable the runner image ships — nothing is pinned. Combined
+with `-D warnings` that means a new Rust release can turn CI red without anyone
+touching the code, and the failure lands on whoever pushes next. Pinning it is
+`messreq-0cp`.
 
 You can build while the TUI is running — cargo writes a new file and swaps it in, and the running process keeps living on the old inode (and therefore on the old code, until you restart it).
 
