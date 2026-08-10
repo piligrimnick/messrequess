@@ -108,6 +108,11 @@ build — so run it locally before pushing. The runner is `ubuntu-latest` even t
 tool targets macOS: every external program goes through `std::process::Command`, so
 nothing in the build or the tests needs a Mac, and Ubuntu minutes are ten times cheaper.
 
+The toolchain is whatever stable the runner image ships — nothing is pinned. Combined
+with `-D warnings` that means a new Rust release can turn CI red without anyone
+touching the code, and the failure lands on whoever pushes next. Pinning it is
+`messreq-0cp`.
+
 You can build while the TUI is running — cargo writes a new file and swaps it in, and the running process keeps living on the old inode (and therefore on the old code, until you restart it).
 
 `cargo test` runs 36 unit tests over the pure functions: building and escaping the tab command, config parsing and path resolution, GitLab host resolution, and the prompt templates. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:

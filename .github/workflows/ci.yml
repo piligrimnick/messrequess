@@ -11,6 +11,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
+# The job only reads the repository. Spelling that out keeps the automatic
+# GITHUB_TOKEN read-only regardless of the repository-wide default.
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -38,6 +43,13 @@ jobs:
           cargo fmt --version
           echo "rustc=$(rustc --version | tr ' ()' '---')" >> "$GITHUB_OUTPUT"
 
+      # The commit sha is part of the key on purpose: actions/cache only writes on
+      # a primary-key miss, so a key built from Cargo.lock alone would freeze
+      # `target/` at whatever the first run produced and never refresh it. The
+      # restore-keys walk back to the newest cache for the same lockfile, then to
+      # the same toolchain. The toolchain version stays in every key — a `target/`
+      # built by a different rustc is discarded by cargo anyway, so restoring it
+      # would only cost download time.
       - name: Cache cargo registry and build artefacts
         uses: actions/cache@v4
         with:
@@ -46,19 +58,22 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             target/
-          key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}
+          key: cargo-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}-${{ github.sha }}
           restore-keys: |
+            cargo-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('**/Cargo.lock') }}-
             cargo-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
-            cargo-${{ runner.os }}-
 
       - name: Formatting
         run: cargo fmt --all -- --check
 
+      # `--locked` on everything that resolves dependencies: Cargo.lock is committed,
+      # and a run that silently re-resolved it would be testing a dependency set
+      # nobody has locally.
       - name: Clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Tests
-        run: cargo test
+        run: cargo test --locked
 
       - name: Release build
-        run: cargo build --release
+        run: cargo build --release --locked
