@@ -1,0 +1,11 @@
+# Formatting is settled: plain rustfmt defaults.
+#
+# The code was already written that way — running `cargo fmt` with the defaults
+# touches a handful of hand-wrapped lines, while a wider profile
+# (`use_small_heuristics = "Max"`) would rewrite several hundred lines that
+# nobody is editing. This file exists so the choice is explicit and enforceable
+# (`cargo fmt --check`) instead of being rediscovered in every merge conflict.
+#
+# Only the edition is pinned, so that a bare `rustfmt src/…` outside cargo
+# parses the sources the same way cargo does.
+edition = "2021"
