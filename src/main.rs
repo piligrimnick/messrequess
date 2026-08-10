@@ -1340,7 +1340,11 @@ fn wrap_for_tab(script: &str) -> String {
 fn open_tab_capture(cmd: &str, sid: String, name: String) -> Result<serde_json::Value, String> {
     let sentinel = prompts_dir().join(format!("{sid}.started"));
     let _ = std::fs::remove_file(&sentinel);
-    let full = wrap_for_tab(&format!("touch {}; {}", shq(&sentinel.display().to_string()), cmd));
+    let full = wrap_for_tab(&format!(
+        "touch {}; {}",
+        shq(&sentinel.display().to_string()),
+        cmd
+    ));
 
     let before = iterm_session_ids();
     // .output() (not .status()) — otherwise it2's stdout "Created new tab: N" leaks into the TUI.
@@ -1417,10 +1421,10 @@ struct App {
     seen: serde_json::Map<String, serde_json::Value>, // acked updated_at (what counts as "new")
     alive: HashSet<String>, // live iTerm2 sessions (for the open/detached status)
     pending: Option<Receiver<Vec<Mr>>>, // background data load
-    spinner: usize,                     // spinner animation frame
-    menu: Option<PromptMenu>,           // the open prompt-mode menu
-    notice: Option<String>,             // error message on top of everything (any key closes it)
-    kbd_enhanced: bool,                 // the terminal tells Shift+Enter apart (kitty protocol)
+    spinner: usize,         // spinner animation frame
+    menu: Option<PromptMenu>, // the open prompt-mode menu
+    notice: Option<String>, // error message on top of everything (any key closes it)
+    kbd_enhanced: bool,     // the terminal tells Shift+Enter apart (kitty protocol)
 }
 
 impl App {
@@ -2006,7 +2010,10 @@ fn render_notice(f: &mut Frame, app: &App) {
     let inner_w = w.saturating_sub(6).max(1) as usize;
     // Height: the lines of text (accounting for wrapping at the popup width) +
     // a blank line and the hint + the border and the vertical padding.
-    let rows: usize = text.split('\n').map(|l| (l.chars().count().max(1)).div_ceil(inner_w)).sum();
+    let rows: usize = text
+        .split('\n')
+        .map(|l| (l.chars().count().max(1)).div_ceil(inner_w))
+        .sum();
     let h: u16 = (rows.saturating_add(6) as u16).min(area.height);
     let rect = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
@@ -2030,7 +2037,12 @@ fn render_notice(f: &mut Frame, app: &App) {
 
     let mut lines: Vec<Line> = text
         .split('\n')
-        .map(|l| Line::from(Span::styled(l.to_string(), Style::default().fg(Color::Gray))))
+        .map(|l| {
+            Line::from(Span::styled(
+                l.to_string(),
+                Style::default().fg(Color::Gray),
+            ))
+        })
         .collect();
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
@@ -2658,7 +2670,10 @@ host: gitlab.example.com
     #[test]
     fn wrap_for_tab_produces_one_sh_c_call() {
         let wrapped = wrap_for_tab("cd '/w' && exec claude --resume 'x'");
-        assert_eq!(wrapped, r#"sh -c 'cd '\''/w'\'' && exec claude --resume '\''x'\'''"#);
+        assert_eq!(
+            wrapped,
+            r#"sh -c 'cd '\''/w'\'' && exec claude --resume '\''x'\'''"#
+        );
     }
 
     const CFG: &str = r#"{
@@ -2704,7 +2719,10 @@ host: gitlab.example.com
 
     #[test]
     fn broken_or_missing_config_is_empty_not_a_panic() {
-        assert_eq!(Config::parse("{ not json").work_dir_for("a/b", "/home/me"), None);
+        assert_eq!(
+            Config::parse("{ not json").work_dir_for("a/b", "/home/me"),
+            None
+        );
         assert_eq!(Config::parse("").work_dir_for("a/b", "/home/me"), None);
         assert_eq!(Config::default().work_dir_for("a/b", "/home/me"), None);
     }
@@ -2755,7 +2773,11 @@ host: gitlab.example.com
     #[test]
     fn notice_popup_survives_a_tiny_terminal() {
         // The popup must not spill out of the buffer and crash the TUI in a narrow window.
-        render_notice_at(12, 3, &"a very long message with no line breaks ".repeat(20));
+        render_notice_at(
+            12,
+            3,
+            &"a very long message with no line breaks ".repeat(20),
+        );
         render_notice_at(1, 1, "x");
     }
 
