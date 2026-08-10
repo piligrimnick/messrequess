@@ -75,17 +75,15 @@ bd create "…" -p 1 -t bug -l release -d "…"
 
 The Dolt data lives in `refs/dolt/data` of **this same** GitHub repository; `.beads/embeddeddolt/` is gitignored and the JSONL export is disabled (`export.auto = false`). Two things trip up syncing:
 
-1. `bd dolt push` cannot find the database — it looks in `.beads/dolt`, while the database is in `.beads/embeddeddolt/messreq`. Push with Dolt itself, from the database directory.
-2. The repository is private and owned by one specific GitHub account. If that account is not the active one in `gh`, both git and Dolt report "Repository not found". Pass a token for the owning account explicitly:
+1. `bd dolt push` cannot find the database — it looks in `.beads/dolt`, while the database is in `.beads/embeddeddolt/messreq`. Push with Dolt itself, from the database directory:
 
 ```bash
-# Replace <your-github-account> with the GitHub account that owns this repository.
-GH_TOKEN=$(gh auth token --user <your-github-account>) git push origin main
-# from .beads/embeddeddolt/messreq:
-GH_TOKEN=$(gh auth token --user <your-github-account>) dolt push origin main
+cd .beads/embeddeddolt/messreq && dolt push origin main
 ```
 
-If `gh auth status` already shows the owning account as the active one, plain `git push` and `dolt push` work and the `GH_TOKEN=` prefix is unnecessary.
+2. Both git and Dolt authenticate as whichever account is active in `gh`. If that is not the account owning the repository, they fail with "Repository not found" — check with `gh auth status` and switch with `gh auth switch --user <account>`.
+
+The token also needs the `workflow` scope, or any push touching `.github/workflows/` is rejected. Add it with `gh auth refresh --scopes workflow --hostname github.com`, and note that the command only saves the new token when it finishes: press Enter in the terminal first, then enter the code in the browser. Authorising in the browser before the command starts polling leaves it hanging and changes nothing.
 
 Pushing Dolt data takes more than a minute even on an empty database — that is a [known git-remote issue](https://github.com/dolthub/dolt/issues/10537), not a broken setup.
 
