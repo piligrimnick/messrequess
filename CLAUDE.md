@@ -22,7 +22,27 @@ It applies to future edits as well, not just the current state. If you touch a l
 
 A terminal dashboard (ratatui TUI) for GitLab merge requests: your own open MRs plus the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads, the merge train, and a computed "whose turn is it". Enter on a card opens a new iTerm2 tab with a Claude session that already has the MR context loaded.
 
-The whole program is one file, `src/main.rs` (~2900 lines), and depends only on `ratatui` and `serde_json`. Everything external happens through child processes: `glab`, `it2`, `claude`, `open`, `terminal-notifier`/`osascript`, `uuidgen`, `date`.
+The crate depends only on `ratatui` and `serde_json`. Everything external happens through child processes: `glab`, `it2`, `claude`, `open`, `terminal-notifier`/`osascript`, `uuidgen`, `date`.
+
+### Layout
+
+The logic lives in a library crate; `src/main.rs` is a thin binary that parses arguments and dispatches to a run mode.
+
+| Module | What lives there |
+|---|---|
+| `model.rs` | `Mr`, `Thread`, `Sev`, `TrainInfo` — the data, with no provider logic |
+| `action.rs` | `compute_action`, the "whose turn is it" rule. Knows nothing about glab |
+| `gitlab.rs` | host resolution, `glab_json`, `load` / `enrich` / `fetch_trains` |
+| `config.rs` | `~/.config/mrdash/config.json`, work-dir resolution |
+| `prompt/` | prompt assembly (`mod.rs`), the `{var}` / `[[if]]` engine (`engine.rs`), built-in templates (`builtin.rs`) |
+| `work.rs` | worktabs, seen, heartbeat, `it2`, launching and resuming sessions |
+| `ui/` | `App` state (`app.rs`), cards (`card.rs`), the frame (`screen.rs`), popups (`popup.rs`), run modes and event loop (`mod.rs`) |
+| `notify.rs` | fingerprints, diffing between passes, delivery |
+| `time.rs` | `parse_iso8601`, `rel_age`, `age_days` |
+
+Default visibility is `pub(crate)`; `pub` is reserved for what the binary actually calls. Keep it that way — if something needs to become `pub`, that is a signal the boundary is wrong.
+
+Formatting is settled on plain rustfmt defaults, pinned by `rustfmt.toml`; `cargo fmt --check` must stay clean.
 
 ### Three different names, don't mix them up
 
@@ -82,7 +102,7 @@ cargo clippy              # NOT installed in this environment:
 
 You can build while the TUI is running — cargo writes a new file and swaps it in, and the running process keeps living on the old inode (and therefore on the old code, until you restart it).
 
-`cargo test` runs 36 unit tests over the pure functions: building and escaping the tab command, config parsing and path resolution, GitLab host resolution, and the prompt templates. The `tests` module sits at the end of `main.rs`. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
+`cargo test` runs 36 unit tests over the pure functions: building and escaping the tab command, config parsing and path resolution, GitLab host resolution, and the prompt templates. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
 
 ```bash
 mrdash                    # TUI

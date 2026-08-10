@@ -4,7 +4,7 @@
 
 A terminal dashboard (ratatui TUI) for GitLab merge requests: your own open MRs and the ones where you are a reviewer, with a computed "whose turn is it now". Enter on a card opens an iTerm2 tab with a Claude session that already has the MR context loaded.
 
-The whole program is one Rust file, `src/main.rs` (~2900 lines), and depends only on `ratatui` and `serde_json`. Everything external happens by spawning child processes (`glab`, `it2`, `claude`); there is no HTTP client of our own.
+The logic lives in a library crate split into modules (`model`, `action`, `gitlab`, `config`, `prompt/`, `work`, `ui/`, `notify`, `time`), with `src/main.rs` as a thin binary that only parses arguments and dispatches. The crate depends only on `ratatui` and `serde_json`. Everything external happens by spawning child processes (`glab`, `it2`, `claude`); there is no HTTP client of our own.
 
 **Architecture, mechanisms, and working commands live in [CLAUDE.md](CLAUDE.md).** It is the single source of truth for this project; this file is only an entry point for agents. Do not copy CLAUDE.md content here, or the two documents will drift apart.
 
