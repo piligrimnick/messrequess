@@ -25,14 +25,14 @@ use serde_json::json;
 
 use crate::config::work_dir_for_mr;
 use crate::error::WorkError;
-use crate::model::Mr;
+use crate::model::MergeRequest;
 use crate::prompt::{build_prompt_line, PromptMode};
 
 /// `--notify` polls GitLab only while the TUI/GUI is open (heartbeat fresher than this threshold).
 pub const HEARTBEAT_STALE_SECS: u64 = 120;
 
-pub(crate) fn mr_key(mr: &Mr) -> String {
-    format!("{}!{}", mr.pid, mr.iid)
+pub(crate) fn mr_key(mr: &MergeRequest) -> String {
+    mr.storage_key()
 }
 
 fn worktabs_path() -> PathBuf {
@@ -180,10 +180,13 @@ fn claude_script(work_dir: &str, args: &str) -> String {
 }
 
 /// Open a new iTerm2 tab with claude for this MR (with a fixed session id).
-pub(crate) fn start_work(mr: &Mr, mode: PromptMode) -> Result<serde_json::Value, WorkError> {
+pub(crate) fn start_work(
+    mr: &MergeRequest,
+    mode: PromptMode,
+) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = uuid();
-    let name = format!("MR !{}", mr.iid);
+    let name = format!("MR !{}", mr.number());
     let prompt = build_prompt_line(mr, mode);
 
     let args = if prompt.is_empty() {
@@ -204,12 +207,12 @@ pub(crate) fn start_work(mr: &Mr, mode: PromptMode) -> Result<serde_json::Value,
 
 /// Resume an existing claude session by its id in a new tab.
 pub(crate) fn resume_work(
-    mr: &Mr,
+    mr: &MergeRequest,
     entry: &serde_json::Value,
 ) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = entry["claude_session"].as_str().unwrap_or("").to_string();
-    let default = format!("MR !{}", mr.iid);
+    let default = format!("MR !{}", mr.number());
     let name = entry["name"].as_str().unwrap_or(&default).to_string();
     let script = claude_script(&work_dir, &format!("--resume {}", shq(&sid)));
     open_tab_capture(&script, sid, name)

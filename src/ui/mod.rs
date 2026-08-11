@@ -16,7 +16,7 @@ use card::truncate;
 use screen::ui;
 
 use crate::error::WorkError;
-use crate::model::Mr;
+use crate::model::MergeRequest;
 use crate::prompt::PromptMode;
 use crate::time::rel_age;
 use crate::work::{focus_iterm, mr_key, resume_work, save_worktabs, start_work, touch_heartbeat};
@@ -24,9 +24,9 @@ use crate::work::{focus_iterm, mr_key, resume_work, save_worktabs, start_work, t
 const REFRESH_SECS: u64 = 300;
 const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
-pub fn print_plain(items: &[Mr]) {
+pub fn print_plain(items: &[MergeRequest]) {
     for mine in [true, false] {
-        let group: Vec<&Mr> = items.iter().filter(|m| m.mine == mine).collect();
+        let group: Vec<&MergeRequest> = items.iter().filter(|m| m.mine == mine).collect();
         println!(
             "\n{} ({})",
             if mine { "MY MRs" } else { "REVIEWING" },
@@ -38,13 +38,13 @@ pub fn print_plain(items: &[Mr]) {
             } else {
                 m.approved_by.len().to_string()
             };
-            let train = match &m.train {
-                Some(t) => format!("🚄#{}/{} ", t.position, t.pipeline),
+            let train = match &m.queue {
+                Some(q) => format!("🚄#{}/{} ", q.position, q.status),
                 None => String::new(),
             };
             println!(
                 "  !{:<6} apr:{:<2} pipe:{:<8} threads:{:<2} age:{:<4} upd:{:<4} {:<14} {}{}",
-                m.iid,
+                m.number(),
                 apr,
                 m.pipeline,
                 m.unresolved.len(),

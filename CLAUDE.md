@@ -30,9 +30,10 @@ The logic lives in a library crate; `src/main.rs` is a thin binary that parses a
 
 | Module | What lives there |
 |---|---|
-| `model.rs` | `Mr`, `Thread`, `Sev`, `TrainInfo` — the data, with no provider logic |
-| `action.rs` | `compute_action`, the "whose turn is it" rule. Knows nothing about glab |
-| `gitlab.rs` | host resolution, `glab_json`, `load` / `enrich` / `fetch_trains` |
+| `model.rs` | `MergeRequest`, `Thread`, `Sev`, `QueuePosition` — the data, plus the provider-neutral enums (`CiStatus`, `Mergeable`, `ReviewState`, `ForgeId`). No provider logic: strings from a provider API get converted to these enums in the adapter, never compared raw here or downstream |
+| `action.rs` | `compute_action`, the "whose turn is it" rule. Operates only on the neutral model — knows nothing about glab or any provider's status vocabulary |
+| `forge.rs` | the `Forge` trait (the provider seam: identify the current user, fetch their open merge requests) and `GitlabForge`, the trait's only implementation today. A GitHub adapter (messreq-3nf) would be a second implementation, not a change to `action.rs`/`ui/` |
+| `gitlab.rs` | host resolution, `glab_json`, `load` / `enrich` / `fetch_trains`, and the GitLab-vocabulary → enum conversion (`ci_status_from_gitlab` and friends) — the only place that knows what GitLab calls things |
 | `config.rs` | `~/.config/mrdash/config.json`, work-dir resolution |
 | `prompt/` | prompt assembly (`mod.rs`), the `{var}` / `[[if]]` engine (`engine.rs`), built-in templates (`builtin.rs`) |
 | `work.rs` | worktabs, seen, heartbeat, `it2`, launching and resuming sessions |
@@ -148,7 +149,7 @@ MRDASH_DEBUG=1 mrdash …   # diagnostics for failed glab calls + `glab auth sta
 }
 ```
 
-A key in `projects` is the project path in GitLab, exactly the one shown on the card (`Mr.path`); matching ignores case and leading/trailing slashes. `default_path` is the fallback for every other project — for a monorepo it is all you need. A leading `~` expands to `$HOME`.
+A key in `projects` is the project path in GitLab, exactly the one shown on the card (`MergeRequest.path`); matching ignores case and leading/trailing slashes. `default_path` is the fallback for every other project — for a monorepo it is all you need. A leading `~` expands to `$HOME`.
 
 The format is JSON rather than TOML because `serde_json` is already a dependency, while TOML would mean a new crate or a hand-written parser. A missing or malformed file means an empty config, not a crash.
 

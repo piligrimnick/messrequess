@@ -4,16 +4,18 @@
 //! computes a (severity, label) pair. `Sev::Action` means the ball is in your
 //! court: the card gets a red border and `--notify` keys off the same value.
 //!
-//! This is the domain core, not API access: it knows nothing about glab.
+//! This is the domain core, not API access: it knows nothing about glab, and
+//! it never compares against a raw provider string — only the enums in
+//! `model.rs`, which the adapter is responsible for producing correctly.
 
-use crate::model::{Mr, Sev};
+use crate::model::{CiStatus, MergeRequest, ReviewState, Sev};
 
-pub(crate) fn compute_action(mr: &mut Mr, me: &str) {
+pub(crate) fn compute_action(mr: &mut MergeRequest, me: &str) {
     let waiting_my_reply = mr.unresolved.iter().any(|t| t.last_author != me);
     let (sev, label) = if mr.mine {
         if mr.draft {
             (Sev::Neutral, "draft".to_string())
-        } else if mr.pipeline == "failed" {
+        } else if mr.pipeline == CiStatus::Failed {
             (Sev::Action, "CI 🔴".to_string())
         } else if waiting_my_reply {
             (Sev::Action, "→ reply".to_string())
@@ -24,7 +26,7 @@ pub(crate) fn compute_action(mr: &mut Mr, me: &str) {
         } else {
             (Sev::Wait, "awaiting review".to_string())
         }
-    } else if mr.my_review == "requested_changes" {
+    } else if mr.my_review == ReviewState::RequestedChanges {
         // I requested changes — the ball is in the author's court, not mine (not "your turn").
         (Sev::Wait, "⛔ changes requested".to_string())
     } else if mr.approved_by.iter().any(|u| u == me) {

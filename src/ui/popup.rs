@@ -88,7 +88,7 @@ pub(crate) fn render_menu(f: &mut Frame, app: &App) {
         .border_style(Style::default().fg(Color::Cyan))
         .padding(Padding::new(2, 2, 1, 1))
         .title(Span::styled(
-            format!(" prompt mode · !{} ", mr.iid),
+            format!(" prompt mode · !{} ", mr.number()),
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),

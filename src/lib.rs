@@ -11,14 +11,16 @@
 //! minutes.
 //!
 //! The layers, from the inside out: `model` is the data, `action` decides whose
-//! turn it is, `time` formats ages. `gitlab` fetches, `config` says where the
-//! local checkouts are, `prompt` builds the text for Claude and `work` opens the
-//! session. `ui` draws the dashboard, `notify` runs the background pass.
+//! turn it is, `time` formats ages. `forge` is the provider seam (`Forge` trait);
+//! `gitlab` is its GitLab implementation, going through `glab`. `config` says
+//! where the local checkouts are, `prompt` builds the text for Claude and `work`
+//! opens the session. `ui` draws the dashboard, `notify` runs the background pass.
 
 pub(crate) mod action;
 pub(crate) mod config;
 pub(crate) mod error;
-pub mod gitlab;
+pub mod forge;
+pub(crate) mod gitlab;
 pub mod model;
 pub mod notify;
 pub mod prompt;

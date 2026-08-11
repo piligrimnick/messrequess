@@ -7,8 +7,8 @@ use std::process::Command;
 
 use serde_json::json;
 
-use crate::gitlab::load;
-use crate::model::{Mr, Sev};
+use crate::forge::{Forge, GitlabForge};
+use crate::model::{MergeRequest, Sev};
 use crate::work::{heartbeat_fresh, HEARTBEAT_STALE_SECS};
 
 fn state_path() -> PathBuf {
@@ -16,16 +16,16 @@ fn state_path() -> PathBuf {
     PathBuf::from(home).join(".local/state/mrdash/state.json")
 }
 
-fn fingerprint(mr: &Mr) -> serde_json::Value {
+fn fingerprint(mr: &MergeRequest) -> serde_json::Value {
     let mut approvals = mr.approved_by.clone();
     approvals.sort();
     json!({
-        "iid": mr.iid,
+        "iid": mr.number(),
         "title": mr.title,
         "url": mr.url,
         "mine": mr.mine,
         "approvals": approvals,
-        "pipeline": mr.pipeline,
+        "pipeline": mr.pipeline.to_string(),
         "actionable": mr.action_sev == Sev::Action,
         "action": mr.action_label,
     })
@@ -68,7 +68,7 @@ pub fn notify_mode(me: &str) {
     if !heartbeat_fresh(HEARTBEAT_STALE_SECS) {
         return;
     }
-    let items = load(me);
+    let items = GitlabForge.open_merge_requests(me);
     // An empty response almost always means a failed request (VPN/token) rather
     // than "every MR is closed". Do not touch the snapshot and do not send a
     // false avalanche of "merged".
@@ -79,7 +79,7 @@ pub fn notify_mode(me: &str) {
 
     let mut current = serde_json::Map::new();
     for mr in &items {
-        current.insert(format!("{}!{}", mr.pid, mr.iid), fingerprint(mr));
+        current.insert(mr.storage_key(), fingerprint(mr));
     }
 
     let prev: Option<serde_json::Map<String, serde_json::Value>> = std::fs::read_to_string(&path)
