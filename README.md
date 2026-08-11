@@ -19,7 +19,6 @@ This is one person's tool, published because someone else might find it useful. 
 Three more things that trip people up:
 
 - A **self-hosted GitLab instance usually means being on its VPN.** Without it, `glab` fails: at startup the binary prints an authentication error and exits, and a failed refresh mid-session leaves the list empty. An empty response is deliberately treated as a failed request rather than "all your MRs got closed", so the snapshot is left alone and you don't get an avalanche of false "merged" notifications.
-- **The built-in prompts are still in Russian.** Translating them is pending work. Until then, run `mrdash --dump-prompts` and rewrite the six template files — see [Prompt templates](#prompt-templates) for what is and isn't overridable.
 - There is **no Homebrew tap yet**, so installing means building from source.
 
 If the dashboard part is all you want, you can skip iTerm2, `it2` and Claude Code: the list, the badges and the notifications work without them. Enter then fails with a popup naming what did not work — either the missing config file or the session that never started.
@@ -99,18 +98,20 @@ The GitLab host is resolved in this order: `$GITLAB_HOST`, then the instance in 
 
 ### Prompt templates
 
-The prompts sent to Claude are templates, not hard-coded strings. `mrdash --dump-prompts` writes the built-in defaults to `~/.config/mrdash/prompts/` (existing files are left alone), after which you can edit any of them: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `footer`. Each one is looked up in that directory first and falls back to the built-in.
+The prompts sent to Claude are templates, not hard-coded strings — Markdown files, since a prompt is structured text a human edits, and `.md` gives you headings, lists and syntax highlighting in an editor. The built-in defaults live in [`prompts/`](prompts/) at the root of this repository. `mrdash --dump-prompts` writes them out to `~/.config/mrdash/prompts/` (existing files are left alone), after which you can edit any of them: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `footer`. Each one is looked up in that directory first and falls back to the built-in.
 
-The syntax is `{variable}` substitution plus a non-nesting `[[if variable]]…[[else]]…[[end]]` block, where the condition is "the variable is non-empty".
+The syntax is `{variable}` substitution plus a non-nesting `[[if variable]]…[[else]]…[[end]]` block, where the condition is "the variable is non-empty". Two smaller pieces are rendered in code and cannot be overridden from a template: the per-thread line and the "conflicts" marker in the header.
 
-The built-in templates are currently written in Russian — a leftover from before the repository was opened up, and pending work. Dumping them and rewriting the six files fixes the task wording. Two smaller pieces are rendered in code and cannot be overridden from a template: the per-thread line and the "conflicts" marker in the header.
+`resume` is what gets sent when you reopen a session that is no longer running (see [Keys](#keys)) — instead of repeating the MR from scratch, it reports what moved (new approvals, the pipeline changing, new unresolved threads, the turn switching to you), using the same fingerprint `--notify` already tracks in `state.json`. Its two extra placeholders are `changes` (the rendered delta, empty if nothing moved or nothing is known yet — e.g. `--notify` has never run) and `elapsed` (how long ago that snapshot was taken).
+
+If `~/.config/mrdash/prompts/` still has `.txt` files from before this format changed (messreq-6x9), they keep working: a name is looked up as `.md` first, and only falls back to `.txt` if no `.md` file exists for it. Nothing is migrated or overwritten automatically — `--dump-prompts` will not write a `<name>.md` default next to a `<name>.txt` you already customized, since that would silently stop your customization from being read.
 
 ## Keys
 
 | Key | Action |
 |---|---|
 | `↑` `↓` / `k` `j` | Move between cards |
-| `Enter` | Claude session for the selected MR: open a new tab, focus the existing one, or resume a closed one |
+| `Enter` | Claude session for the selected MR: open a new tab, focus the existing one, or resume a closed one (with a prompt reporting what changed since the last poll) |
 | `Shift+Enter` or `p` | Prompt-mode menu (see below) |
 | `o` | Open the MR in the browser (also marks it seen) |
 | `m` | Mark everything as seen |

@@ -26,7 +26,7 @@ use serde_json::json;
 use crate::config::work_dir_for_mr;
 use crate::error::WorkError;
 use crate::model::MergeRequest;
-use crate::prompt::{build_prompt_line, PromptMode};
+use crate::prompt::{build_prompt_line, build_resume_prompt_line, PromptMode};
 
 /// `--notify` polls GitLab only while the TUI/GUI is open (heartbeat fresher than this threshold).
 pub const HEARTBEAT_STALE_SECS: u64 = 120;
@@ -205,7 +205,15 @@ pub(crate) fn start_work(
     open_tab_capture(&claude_script(&work_dir, &args), sid, name)
 }
 
-/// Resume an existing claude session by its id in a new tab.
+/// Resume an existing claude session by its id in a new tab, with a prompt
+/// that says what changed on the MR since `--notify`'s last snapshot — see
+/// `build_resume_prompt_line`. A session picked up days later should not
+/// start blind.
+///
+/// `claude [options] [command] [prompt]` takes the prompt as a positional
+/// argument regardless of `--resume`/`-r` — confirmed against the CLI itself
+/// (not documented either way), the same way `start_work` already passes a
+/// prompt positionally for a brand new session.
 pub(crate) fn resume_work(
     mr: &MergeRequest,
     entry: &serde_json::Value,
@@ -214,8 +222,20 @@ pub(crate) fn resume_work(
     let sid = entry["claude_session"].as_str().unwrap_or("").to_string();
     let default = format!("MR !{}", mr.number());
     let name = entry["name"].as_str().unwrap_or(&default).to_string();
-    let script = claude_script(&work_dir, &format!("--resume {}", shq(&sid)));
-    open_tab_capture(&script, sid, name)
+    let prompt = build_resume_prompt_line(mr);
+
+    let args = if prompt.is_empty() {
+        format!("--resume {}", shq(&sid))
+    } else {
+        let file = prompts_dir().join(format!("{sid}.txt"));
+        let _ = std::fs::write(&file, &prompt);
+        format!(
+            "--resume {} \"$(cat {})\"",
+            shq(&sid),
+            shq(&file.display().to_string())
+        )
+    };
+    open_tab_capture(&claude_script(&work_dir, &args), sid, name)
 }
 
 fn prompts_dir() -> PathBuf {

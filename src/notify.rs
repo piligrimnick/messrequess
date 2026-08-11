@@ -28,9 +28,112 @@ fn fingerprint(mr: &MergeRequest) -> serde_json::Value {
         "mine": mr.mine,
         "approvals": approvals,
         "pipeline": mr.pipeline.to_string(),
+        "unresolved": mr.unresolved.len(),
         "actionable": mr.action_sev == Sev::Action,
         "action": mr.action_label,
     })
+}
+
+/// The fingerprint last recorded for one MR (by `--notify`), if any. Used by
+/// the resume prompt (see `prompt::build_resume_prompt_line`) to say what
+/// moved since the session was left, instead of restating the MR from
+/// scratch. Reuses `fingerprint`'s shape and `state_path()` — the same
+/// on-disk snapshot `--notify` diffs against, just read for one key instead
+/// of compared wholesale.
+pub(crate) fn last_fingerprint(key: &str) -> Option<serde_json::Value> {
+    let snapshot: Snapshot = std::fs::read_to_string(state_path())
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    snapshot.get(key).cloned()
+}
+
+/// How long ago `state.json` was last written, i.e. how fresh the fingerprint
+/// `changes_since` compares against is. This is the honest reference point
+/// for the resume prompt's "elapsed" — `seen.json`'s last-acked `updated_at`
+/// looks tempting but measures the wrong thing (when the MR itself last
+/// changed, not when `--notify` last captured a snapshot of it), which would
+/// silently mismatch the delta it is displayed next to. `None` if `--notify`
+/// has never written the file yet, or its mtime can't be read.
+pub(crate) fn state_age() -> Option<String> {
+    let secs = std::fs::metadata(state_path())
+        .and_then(|m| m.modified())
+        .ok()?
+        .elapsed()
+        .ok()?
+        .as_secs();
+    Some(crate::time::rel_age_secs(secs as i64))
+}
+
+/// Usernames present in `current_field` (a JSON string array) that are not in
+/// `prev_field` (the same shape, from a previous fingerprint). Shared by
+/// `diff` (whole-snapshot notifications) and `changes_since` (single-MR
+/// resume delta) — both need "what's new in this approvals list".
+fn newly_added(prev_field: &serde_json::Value, current_field: &serde_json::Value) -> Vec<String> {
+    let old: HashSet<&str> = prev_field
+        .as_array()
+        .map(|a| a.iter().filter_map(|x| x.as_str()).collect())
+        .unwrap_or_default();
+    current_field
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| x.as_str())
+                .filter(|u| !old.contains(u))
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What changed on `mr` since `prev` (its last recorded fingerprint, if any):
+/// new approvals, the pipeline moving, new unresolved threads, and the turn
+/// switching to you. Each entry is one short, human-readable line — the
+/// resume prompt renders them as a bullet list. Pure, like `diff`, which
+/// covers the same ground for the notification path; the two are not
+/// unified because `diff` reports notification-worthy events across a whole
+/// snapshot (including new/closed MRs) while this reports the full picture
+/// for a single, already-known MR.
+pub(crate) fn changes_since(prev: Option<&serde_json::Value>, mr: &MergeRequest) -> Vec<String> {
+    let Some(prev) = prev else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+
+    if mr.mine {
+        let current_approvals = json!(mr.approved_by);
+        let added = newly_added(&prev["approvals"], &current_approvals);
+        if !added.is_empty() {
+            out.push(format!("approved by {}", added.join(", ")));
+        }
+
+        let old_pipeline = prev["pipeline"].as_str().unwrap_or("");
+        let now_pipeline = mr.pipeline.to_string();
+        if !old_pipeline.is_empty() && old_pipeline != now_pipeline {
+            out.push(format!("pipeline: {old_pipeline} → {now_pipeline}"));
+        }
+    }
+
+    // `unresolved` was added to `fingerprint` in messreq-6x9 — a `prev` from
+    // before that has no such key. Treat "the field is missing" as "nothing
+    // to compare", not "0 threads before": the latter would misreport every
+    // MR with unresolved threads as having "new" ones on the first resume
+    // after upgrading.
+    if let Some(old_unresolved) = prev["unresolved"].as_u64() {
+        let now_unresolved = mr.unresolved.len() as u64;
+        if now_unresolved > old_unresolved {
+            out.push(format!(
+                "{} new unresolved thread(s)",
+                now_unresolved - old_unresolved
+            ));
+        }
+    }
+
+    let was_actionable = prev["actionable"].as_bool().unwrap_or(false);
+    if !was_actionable && mr.action_sev == Sev::Action {
+        out.push(format!("now your turn — {}", mr.action_label));
+    }
+
+    out
 }
 
 /// One outbound notification: subtitle, message, and the URL
@@ -76,23 +179,7 @@ fn diff(prev: &Snapshot, current: &Snapshot) -> Vec<Notification> {
             Some(p) => {
                 // New approvals on my own MR.
                 if mine {
-                    let old: HashSet<String> = p["approvals"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .collect()
-                        })
-                        .unwrap_or_default();
-                    let added: Vec<String> = cur["approvals"]
-                        .as_array()
-                        .map(|a| {
-                            a.iter()
-                                .filter_map(|x| x.as_str().map(String::from))
-                                .filter(|u| !old.contains(u))
-                                .collect()
-                        })
-                        .unwrap_or_default();
+                    let added = newly_added(&p["approvals"], &cur["approvals"]);
                     if !added.is_empty() {
                         msgs.push(Notification {
                             subtitle: format!("+approval · !{iid}"),
@@ -307,6 +394,25 @@ mod tests {
     }
 
     #[test]
+    fn newly_added_reports_only_entries_missing_from_prev() {
+        let prev = json!(["bob"]);
+        let current = json!(["bob", "alice"]);
+        assert_eq!(newly_added(&prev, &current), vec!["alice".to_string()]);
+    }
+
+    #[test]
+    fn newly_added_handles_a_missing_prev_or_current_array() {
+        // prev missing/not-an-array → nothing is "old", so everything in
+        // current counts as new.
+        assert_eq!(
+            newly_added(&json!(null), &json!(["alice"])),
+            vec!["alice".to_string()]
+        );
+        // current missing/not-an-array → nothing to report.
+        assert!(newly_added(&json!(["alice"]), &json!(null)).is_empty());
+    }
+
+    #[test]
     fn first_pass_ever_is_silent() {
         let forge = FixtureForge(vec![mr(1, false, &[], CiStatus::Success, false)]);
         let (msgs, current) =
@@ -413,6 +519,85 @@ mod tests {
         let empty = FixtureForge(vec![]);
         let result = compute(&empty.open_merge_requests("me"), Some(&snap1));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn changes_since_reports_new_approval_pipeline_move_and_turn() {
+        let prev = json!({
+            "approvals": ["bob"],
+            "pipeline": "running",
+            "unresolved": 1,
+            "actionable": false,
+        });
+        let m = mr(1, true, &["bob", "alice"], CiStatus::Failed, true);
+        let out = changes_since(Some(&prev), &m);
+        assert!(out.iter().any(|s| s.contains("alice")), "{out:?}");
+        assert!(!out.iter().any(|s| s.contains("bob")), "{out:?}"); // bob was already known
+        assert!(
+            out.iter()
+                .any(|s| s.contains("running") && s.contains("failed")),
+            "{out:?}"
+        );
+        assert!(out.iter().any(|s| s.contains("your turn")), "{out:?}");
+    }
+
+    #[test]
+    fn changes_since_reports_new_unresolved_threads() {
+        let prev =
+            json!({"approvals": [], "pipeline": "success", "unresolved": 0, "actionable": false});
+        let mut m = mr(1, false, &[], CiStatus::Success, false);
+        m.unresolved.push(crate::model::Thread {
+            id: "d1".to_string(),
+            author: "bob".to_string(),
+            last_author: "bob".to_string(),
+            notes: 1,
+            body: "please check this".to_string(),
+            mine: false,
+        });
+        let out = changes_since(Some(&prev), &m);
+        assert!(
+            out.iter().any(|s| s.contains("1 new unresolved")),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn changes_since_ignores_unresolved_count_when_prev_predates_the_field() {
+        // `unresolved` was added to `fingerprint` in messreq-6x9 — a
+        // `state.json` written by an older build has no such key for any
+        // entry. That must read as "nothing to compare", not "0 before":
+        // otherwise every MR with unresolved threads falsely reports "N new
+        // unresolved thread(s)" on the very first resume after upgrading.
+        let prev = json!({"approvals": [], "pipeline": "success", "actionable": false});
+        let mut m = mr(1, false, &[], CiStatus::Success, false);
+        m.unresolved.push(crate::model::Thread {
+            id: "d1".to_string(),
+            author: "bob".to_string(),
+            last_author: "bob".to_string(),
+            notes: 1,
+            body: "please check this".to_string(),
+            mine: false,
+        });
+        let out = changes_since(Some(&prev), &m);
+        assert!(!out.iter().any(|s| s.contains("unresolved")), "{out:?}");
+    }
+
+    #[test]
+    fn changes_since_is_empty_without_a_previous_fingerprint() {
+        let m = mr(1, true, &["alice"], CiStatus::Success, true);
+        assert!(changes_since(None, &m).is_empty());
+    }
+
+    #[test]
+    fn changes_since_is_empty_when_nothing_moved() {
+        let prev = json!({
+            "approvals": ["alice"],
+            "pipeline": "success",
+            "unresolved": 0,
+            "actionable": false,
+        });
+        let m = mr(1, true, &["alice"], CiStatus::Success, false);
+        assert!(changes_since(Some(&prev), &m).is_empty());
     }
 
     #[test]
