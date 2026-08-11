@@ -43,6 +43,7 @@ The logic lives in a library crate; `src/main.rs` is a thin binary that parses a
 | `forge.rs` | the `Forge` trait (the provider seam: identify the current user, fetch their open merge requests) and `GitlabForge`, the trait's only implementation today. A GitHub adapter (messreq-3nf) would be a second implementation, not a change to `action.rs`/`ui/` |
 | `gitlab.rs` | host resolution, `glab_json`, `load` / `enrich` / `fetch_trains`, and the GitLab-vocabulary → enum conversion (`ci_status_from_gitlab` and friends) — the only place that knows what GitLab calls things |
 | `config.rs` | `~/.config/messreq/config.json`, work-dir resolution |
+| `cli.rs` | `--help`/`-h` text and unknown-flag detection — has to run before `main.rs` calls into `glab` (via `forge.me()`) at all, so it's a pure module with its own unit tests rather than logic inlined in the `[[bin]]` crate |
 | `prompt/` | prompt assembly (`mod.rs`), the `{var}` / `[[if]]` engine (`engine.rs`), built-in templates (`builtin.rs`) |
 | `work.rs` | worktabs, seen, heartbeat, `it2`, launching and resuming sessions |
 | `migrate.rs` | transitional shim: carries `~/.local/state/mrdash/` and `~/.config/mrdash/` forward to their `messreq` names on first startup after the rename (messreq-c9j); deletable once every machine has picked it up |

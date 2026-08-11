@@ -15,10 +15,13 @@
 //! `gitlab` is its GitLab implementation, going through `glab`. `config` says
 //! where the local checkouts are, `prompt` builds the text for Claude and `work`
 //! opens the session. `ui` draws the dashboard, `notify` runs the background pass.
-//! `migrate` is a transitional shim carrying old `mrdash` state/config
-//! directories forward to their `messreq` names (messreq-c9j).
+//! `cli` is the `--help`/unknown-flag argument parsing that has to work before
+//! any of that — before `glab` is ever called. `migrate` is a transitional shim
+//! carrying old `mrdash` state/config directories forward to their `messreq`
+//! names (messreq-c9j).
 
 pub(crate) mod action;
+pub mod cli;
 pub(crate) mod config;
 pub(crate) mod error;
 pub mod forge;
