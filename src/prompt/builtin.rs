@@ -4,7 +4,7 @@
 //! under `prompts/` at the repository root, pulled in with `include_str!` so
 //! that editing a default prompt is a Markdown edit, not a `src/` edit.
 //!
-//! `mrdash --dump-prompts` writes the defaults out so that there is something
+//! `messreq --dump-prompts` writes the defaults out so that there is something
 //! to edit; existing files are left alone.
 
 use std::path::PathBuf;
@@ -30,7 +30,7 @@ const BUILTIN_PROMPTS: [(&str, &str); 7] = [
 
 pub(crate) fn prompt_templates_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".config/mrdash/prompts")
+    PathBuf::from(home).join(".config/messreq/prompts")
 }
 
 pub(crate) fn builtin_template(name: &str) -> &'static str {
@@ -41,13 +41,13 @@ pub(crate) fn builtin_template(name: &str) -> &'static str {
         .unwrap_or("")
 }
 
-/// Write the built-in templates into `~/.config/mrdash/prompts/` so that there
+/// Write the built-in templates into `~/.config/messreq/prompts/` so that there
 /// is something to edit. Existing files are left alone — the user's edits win.
 ///
 /// Templates moved from `.txt` to `.md` in messreq-6x9. A name that already
 /// has a `.md` file is left alone (the normal "don't overwrite" rule). A name
 /// that has no `.md` file but does have a leftover `.txt` from an older
-/// `mrdash` is *also* left alone — writing the `.md` default next to it would
+/// build is *also* left alone — writing the `.md` default next to it would
 /// silently stop `Templates::get` from reading the user's customization,
 /// since the new lookup order checks `.md` first. The `.txt` file keeps
 /// working as an override either way (see `Templates::get`); nothing is
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn dump_writes_defaults_and_keeps_existing_files() {
-        let dir = std::env::temp_dir().join(format!("mrdash-dump-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("messreq-dump-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deep.md"), "mine").unwrap();
@@ -105,7 +105,7 @@ mod tests {
     #[test]
     fn dump_does_not_shadow_a_pre_existing_legacy_txt_customization() {
         let dir =
-            std::env::temp_dir().join(format!("mrdash-dump-legacy-test-{}", std::process::id()));
+            std::env::temp_dir().join(format!("messreq-dump-legacy-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deep.txt"), "my old customization").unwrap();

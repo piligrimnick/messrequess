@@ -1,4 +1,4 @@
-//! `~/.config/mrdash/config.json` — where the local copies of the repositories
+//! `~/.config/messreq/config.json` — where the local copies of the repositories
 //! live. The Claude session for an MR is opened in the directory of the project
 //! that MR belongs to:
 //!
@@ -43,7 +43,7 @@ fn config_path() -> PathBuf {
         .ok()
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| format!("{}/.config", home_dir()));
-    PathBuf::from(base).join("mrdash/config.json")
+    PathBuf::from(base).join("messreq/config.json")
 }
 
 /// The project path in canonical form: no surrounding slashes or spaces, all

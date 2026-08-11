@@ -201,7 +201,7 @@ fn glab_json(path: &str, paginate: bool) -> Option<serde_json::Value> {
     cmd.arg(path);
     let out = cmd.output().ok()?;
     if !out.status.success() {
-        if std::env::var("MRDASH_DEBUG").is_ok() {
+        if std::env::var("MESSREQ_DEBUG").is_ok() {
             eprintln!(
                 "glab api {path} failed (status {:?}): {}",
                 out.status.code(),
@@ -225,7 +225,7 @@ pub(crate) fn me_username() -> String {
     let name = glab_json("user", false)
         .and_then(|v| v.get("username").and_then(|s| s.as_str()).map(String::from))
         .unwrap_or_else(|| "unknown".to_string());
-    if name == "unknown" && std::env::var("MRDASH_DEBUG").is_ok() {
+    if name == "unknown" && std::env::var("MESSREQ_DEBUG").is_ok() {
         eprintln!("HOME={:?}", std::env::var("HOME"));
         eprintln!("XDG_CONFIG_HOME={:?}", std::env::var("XDG_CONFIG_HOME"));
         if let Ok(out) = Command::new("glab").args(["auth", "status"]).output() {

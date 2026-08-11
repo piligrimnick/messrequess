@@ -37,7 +37,7 @@ pub(crate) fn mr_key(mr: &MergeRequest) -> String {
 
 fn worktabs_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".local/state/mrdash/worktabs.json")
+    PathBuf::from(home).join(".local/state/messreq/worktabs.json")
 }
 
 pub(crate) fn load_worktabs() -> serde_json::Map<String, serde_json::Value> {
@@ -62,7 +62,7 @@ pub(crate) fn save_worktabs(map: &serde_json::Map<String, serde_json::Value>) {
 
 fn seen_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".local/state/mrdash/seen.json")
+    PathBuf::from(home).join(".local/state/messreq/seen.json")
 }
 
 pub(crate) fn load_seen() -> serde_json::Map<String, serde_json::Value> {
@@ -87,7 +87,7 @@ pub(crate) fn save_seen(map: &serde_json::Map<String, serde_json::Value>) {
 
 fn heartbeat_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".local/state/mrdash/heartbeat")
+    PathBuf::from(home).join(".local/state/messreq/heartbeat")
 }
 
 pub(crate) fn touch_heartbeat() {
@@ -240,7 +240,7 @@ pub(crate) fn resume_work(
 
 fn prompts_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let dir = PathBuf::from(home).join(".local/state/mrdash/prompts");
+    let dir = PathBuf::from(home).join(".local/state/messreq/prompts");
     let _ = std::fs::create_dir_all(&dir);
     dir
 }

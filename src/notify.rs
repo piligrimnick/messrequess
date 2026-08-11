@@ -15,7 +15,7 @@ type Snapshot = serde_json::Map<String, serde_json::Value>;
 
 fn state_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".local/state/mrdash/state.json")
+    PathBuf::from(home).join(".local/state/messreq/state.json")
 }
 
 fn fingerprint(mr: &MergeRequest) -> serde_json::Value {
@@ -234,7 +234,7 @@ fn summarize(msgs: Vec<Notification>) -> Vec<Notification> {
     if msgs.len() > 4 {
         vec![Notification {
             subtitle: format!("{} MR changes", msgs.len()),
-            message: "Open mrdash to view".to_string(),
+            message: "Open messreq to view".to_string(),
             url: None,
         }]
     } else {
@@ -272,7 +272,7 @@ fn notify(subtitle: &str, message: &str, url: Option<&str>, has_tn: bool) {
         let mut cmd = Command::new("terminal-notifier");
         cmd.args([
             "-title",
-            "mrdash",
+            "messreq",
             "-subtitle",
             subtitle,
             "-message",
@@ -287,7 +287,7 @@ fn notify(subtitle: &str, message: &str, url: Option<&str>, has_tn: bool) {
     } else {
         let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
         let script = format!(
-            "display notification \"{}\" with title \"mrdash\" subtitle \"{}\"",
+            "display notification \"{}\" with title \"messreq\" subtitle \"{}\"",
             esc(message),
             esc(subtitle)
         );

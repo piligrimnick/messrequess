@@ -59,13 +59,13 @@ Notifications key off the same computation, so "needs action" means the same thi
 ```bash
 git clone https://github.com/piligrimnick/messrequess.git
 cd messrequess
-cargo install --path .        # installs the `mrdash` binary into ~/.cargo/bin
+cargo install --path .        # installs the `messreq` binary into ~/.cargo/bin
 ```
 
 Or build in place and symlink it yourself:
 
 ```bash
-cargo build --release         # target/release/mrdash
+cargo build --release         # target/release/messreq
 ```
 
 Check that the prerequisites are in place before the first run:
@@ -78,7 +78,7 @@ claude --version
 
 ## Configure
 
-`~/.config/mrdash/config.json` (or `$XDG_CONFIG_HOME/mrdash/config.json`) maps a GitLab project to the local checkout where the Claude session should start:
+`~/.config/messreq/config.json` (or `$XDG_CONFIG_HOME/messreq/config.json`) maps a GitLab project to the local checkout where the Claude session should start:
 
 ```json
 {
@@ -98,13 +98,13 @@ The GitLab host is resolved in this order: `$GITLAB_HOST`, then the instance in 
 
 ### Prompt templates
 
-The prompts sent to Claude are templates, not hard-coded strings — Markdown files, since a prompt is structured text a human edits, and `.md` gives you headings, lists and syntax highlighting in an editor. The built-in defaults live in [`prompts/`](prompts/) at the root of this repository. `mrdash --dump-prompts` writes them out to `~/.config/mrdash/prompts/` (existing files are left alone), after which you can edit any of them: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `footer`. Each one is looked up in that directory first and falls back to the built-in.
+The prompts sent to Claude are templates, not hard-coded strings — Markdown files, since a prompt is structured text a human edits, and `.md` gives you headings, lists and syntax highlighting in an editor. The built-in defaults live in [`prompts/`](prompts/) at the root of this repository. `messreq --dump-prompts` writes them out to `~/.config/messreq/prompts/` (existing files are left alone), after which you can edit any of them: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `footer`. Each one is looked up in that directory first and falls back to the built-in.
 
 The syntax is `{variable}` substitution plus a non-nesting `[[if variable]]…[[else]]…[[end]]` block, where the condition is "the variable is non-empty". Two smaller pieces are rendered in code and cannot be overridden from a template: the per-thread line and the "conflicts" marker in the header.
 
 `resume` is what gets sent when you reopen a session that is no longer running (see [Keys](#keys)) — instead of repeating the MR from scratch, it reports what moved (new approvals, the pipeline changing, new unresolved threads, the turn switching to you), using the same fingerprint `--notify` already tracks in `state.json`. Its two extra placeholders are `changes` (the rendered delta, empty if nothing moved or nothing is known yet — e.g. `--notify` has never run) and `elapsed` (how long ago that snapshot was taken).
 
-If `~/.config/mrdash/prompts/` still has `.txt` files from before this format changed (messreq-6x9), they keep working: a name is looked up as `.md` first, and only falls back to `.txt` if no `.md` file exists for it. Nothing is migrated or overwritten automatically — `--dump-prompts` will not write a `<name>.md` default next to a `<name>.txt` you already customized, since that would silently stop your customization from being read.
+If `~/.config/messreq/prompts/` still has `.txt` files from before this format changed (messreq-6x9), they keep working: a name is looked up as `.md` first, and only falls back to `.txt` if no `.md` file exists for it. Nothing is migrated or overwritten automatically — `--dump-prompts` will not write a `<name>.md` default next to a `<name>.txt` you already customized, since that would silently stop your customization from being read.
 
 ## Keys
 
@@ -132,21 +132,21 @@ The list reloads by itself every 300 seconds.
 ## Other run modes
 
 ```bash
-mrdash                    # the TUI
-mrdash --plain            # (= --once) one textual dump of the MR list, then exit
-mrdash --snapshot         # render a single TUI frame to text (118×46) — layout
-                          # checking without a real terminal
-mrdash --prompt <iid>     # print the prompt that Enter would send for this MR
-mrdash --dump-prompts     # write the built-in prompt templates to ~/.config/mrdash/prompts/
-mrdash --notify           # one notification pass (see below)
-MRDASH_DEBUG=1 mrdash …   # diagnostics for failed glab calls, plus `glab auth status`
+messreq                    # the TUI
+messreq --plain            # (= --once) one textual dump of the MR list, then exit
+messreq --snapshot         # render a single TUI frame to text (118×46) — layout
+                           # checking without a real terminal
+messreq --prompt <iid>     # print the prompt that Enter would send for this MR
+messreq --dump-prompts     # write the built-in prompt templates to ~/.config/messreq/prompts/
+messreq --notify           # one notification pass (see below)
+MESSREQ_DEBUG=1 messreq …  # diagnostics for failed glab calls, plus `glab auth status`
 ```
 
 ## Notifications
 
-`mrdash --notify` does one poll, compares it against the snapshot from the previous pass, and sends a desktop notification for what changed: a new MR you have to review, an approval on your own MR, your pipeline turning red, the turn switching to you, an MR that got merged or closed. More than four changes collapse into a single summary.
+`messreq --notify` does one poll, compares it against the snapshot from the previous pass, and sends a desktop notification for what changed: a new MR you have to review, an approval on your own MR, your pipeline turning red, the turn switching to you, an MR that got merged or closed. More than four changes collapse into a single summary.
 
-It is meant to be driven by a `launchd` agent — for example `~/Library/LaunchAgents/com.example.mrdash.notify.plist`:
+It is meant to be driven by a `launchd` agent — for example `~/Library/LaunchAgents/com.example.messreq.notify.plist`:
 
 ```xml
 <?xml version="1.0" encoding="UTF-8"?>
@@ -154,10 +154,10 @@ It is meant to be driven by a `launchd` agent — for example `~/Library/LaunchA
   "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key><string>com.example.mrdash.notify</string>
+  <key>Label</key><string>com.example.messreq.notify</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/you/.cargo/bin/mrdash</string>
+    <string>/Users/you/.cargo/bin/messreq</string>
     <string>--notify</string>
   </array>
   <key>StartInterval</key><integer>300</integer>
@@ -167,7 +167,7 @@ It is meant to be driven by a `launchd` agent — for example `~/Library/LaunchA
 ```
 
 ```bash
-launchctl load ~/Library/LaunchAgents/com.example.mrdash.notify.plist
+launchctl load ~/Library/LaunchAgents/com.example.messreq.notify.plist
 ```
 
 Keep the interval at 300 seconds: `--notify` runs its own full load, so polling more often only duplicates what the TUI is already fetching.
@@ -176,7 +176,7 @@ Keep the interval at 300 seconds: `--notify` runs its own full load, so polling 
 
 ## State on disk
 
-Everything is under `~/.local/state/mrdash/`:
+Everything is under `~/.local/state/messreq/`:
 
 | File | Contents |
 |---|---|
@@ -192,19 +192,11 @@ Entries for MRs that disappear from the response are pruned automatically, along
 
 ## About the name
 
-Three names are in play, and the rename is not finished:
-
-| Where | Name |
-|---|---|
-| This repository | `messrequess` |
-| The command it will be called | `messreq` |
-| The crate, the binary, `~/.local/state/mrdash/`, `MRDASH_DEBUG` | `mrdash` |
-
-This README describes what exists today, so it says `mrdash` everywhere the binary is meant. Renaming is an open issue — it is a state-directory migration and a `launchd` reconfiguration, not a search-and-replace.
+This repository is `messrequess`; the command, the crate, the binary, and every on-disk path (`~/.local/state/messreq/`, `~/.config/messreq/`) are `messreq`. If you are upgrading from an install that predates the rename, the first run carries your old `~/.local/state/mrdash/` and `~/.config/mrdash/` forward automatically — session bindings, seen/notification state and any custom prompts survive, and nothing is deleted or overwritten in the process.
 
 ## Related
 
-`mrdash-gui` is a GUI variant of the same dashboard, built on eframe. It shares the state files with this one.
+`mrdash-gui` is a GUI variant of the same dashboard, built on eframe, in its own repository not covered by this rename. It shares the state files with this one — if you run both, update `mrdash-gui` to the same `~/.local/state/messreq/` paths too, or it will stop seeing this dashboard's state once the migration above moves it.
 
 ## License
 

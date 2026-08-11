@@ -1,7 +1,7 @@
 //! The prompt handed to Claude when a session is opened for an MR.
 //!
 //! The text is not hardcoded: every piece is a template. We first look for the
-//! file `~/.config/mrdash/prompts/<name>.md`, and only if it is missing do we
+//! file `~/.config/messreq/prompts/<name>.md`, and only if it is missing do we
 //! fall back to the built-in default (see `builtin`). That way the tool works
 //! with no configuration at all, while the wording can be tailored to your own
 //! project without a rebuild.
@@ -9,7 +9,7 @@
 //! Templates moved from `.txt` to `.md` in messreq-6x9 — a prompt is
 //! structured text a human edits, and Markdown gives headings, lists and
 //! syntax highlighting in an editor that plain text does not. A `.txt` file
-//! left over from an older `mrdash` (`--dump-prompts` used to write those)
+//! left over from an older build (`--dump-prompts` used to write those)
 //! still works: `Templates::get` falls back to it when no `.md` file exists
 //! for that name.
 //!
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn user_md_template_overrides_builtin() {
-        let dir = std::env::temp_dir().join(format!("mrdash-prompts-test-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("messreq-prompts-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deep.md"), "A custom template for !{iid}\n").unwrap();
         let tpl = Templates {
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn legacy_txt_template_still_overrides_when_no_md_exists() {
         let dir =
-            std::env::temp_dir().join(format!("mrdash-prompts-legacy-{}", std::process::id()));
+            std::env::temp_dir().join(format!("messreq-prompts-legacy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deep.txt"), "A legacy .txt template for !{iid}\n").unwrap();
         let tpl = Templates {
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn md_template_wins_over_a_coexisting_legacy_txt() {
-        let dir = std::env::temp_dir().join(format!("mrdash-prompts-both-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("messreq-prompts-both-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deep.txt"), "old txt version\n").unwrap();
         std::fs::write(dir.join("deep.md"), "new md version\n").unwrap();

@@ -1,19 +1,25 @@
-//! The `mrdash` command: parse the arguments and dispatch to a run mode.
+//! The `messreq` command: parse the arguments and dispatch to a run mode.
 
-use mrdash::forge::{Forge, GitlabForge};
-use mrdash::notify::notify_mode;
-use mrdash::prompt::{build_prompt_line, dump_default_prompts, PromptMode};
-use mrdash::ui;
-use mrdash::work::{heartbeat_fresh, HEARTBEAT_STALE_SECS};
+use messreq::forge::{Forge, GitlabForge};
+use messreq::notify::notify_mode;
+use messreq::prompt::{build_prompt_line, dump_default_prompts, PromptMode};
+use messreq::ui;
+use messreq::work::{heartbeat_fresh, HEARTBEAT_STALE_SECS};
 
 fn main() -> std::io::Result<()> {
+    // One-off carry-over from the legacy `mrdash` paths (messreq-c9j). Must
+    // run before anything below reads state or config — including the
+    // heartbeat check right after this, which would otherwise see a missing
+    // `messreq` heartbeat and skip `--notify` forever.
+    messreq::migrate::migrate_legacy_paths();
+
     // --notify: if the TUI/GUI is closed (a stale heartbeat), exit BEFORE any
     // call to GitLab — including resolving the user. No background polling.
     if std::env::args().any(|a| a == "--notify") && !heartbeat_fresh(HEARTBEAT_STALE_SECS) {
         return Ok(());
     }
 
-    // Dump the built-in prompt templates into ~/.config/mrdash/prompts/ so that
+    // Dump the built-in prompt templates into ~/.config/messreq/prompts/ so that
     // they can be edited. GitLab is not needed for that — do it before
     // me_username().
     if std::env::args().any(|a| a == "--dump-prompts") {
@@ -39,7 +45,7 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-    // Preview of the prompt that would go to Claude for this MR: mrdash --prompt <iid>
+    // Preview of the prompt that would go to Claude for this MR: messreq --prompt <iid>
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--prompt") {
         let iid: u64 = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(0);

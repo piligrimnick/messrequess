@@ -10,7 +10,7 @@ The rule covers:
 
 - code: identifiers, inline comments, `///` doc comments;
 - string literals and everything the TUI puts on screen;
-- prompt templates — the `prompts/*.md` files in this repository, the `TPL_*` constants that embed them, and the files under `~/.config/mrdash/prompts/`;
+- prompt templates — the `prompts/*.md` files in this repository, the `TPL_*` constants that embed them, and the files under `~/.config/messreq/prompts/`;
 - documentation: this file, `AGENTS.md`, `README`, and any design notes;
 - commit messages;
 - beads issue titles, descriptions, and comments;
@@ -34,9 +34,10 @@ The logic lives in a library crate; `src/main.rs` is a thin binary that parses a
 | `action.rs` | `compute_action`, the "whose turn is it" rule. Operates only on the neutral model — knows nothing about glab or any provider's status vocabulary |
 | `forge.rs` | the `Forge` trait (the provider seam: identify the current user, fetch their open merge requests) and `GitlabForge`, the trait's only implementation today. A GitHub adapter (messreq-3nf) would be a second implementation, not a change to `action.rs`/`ui/` |
 | `gitlab.rs` | host resolution, `glab_json`, `load` / `enrich` / `fetch_trains`, and the GitLab-vocabulary → enum conversion (`ci_status_from_gitlab` and friends) — the only place that knows what GitLab calls things |
-| `config.rs` | `~/.config/mrdash/config.json`, work-dir resolution |
+| `config.rs` | `~/.config/messreq/config.json`, work-dir resolution |
 | `prompt/` | prompt assembly (`mod.rs`), the `{var}` / `[[if]]` engine (`engine.rs`), built-in templates (`builtin.rs`) |
 | `work.rs` | worktabs, seen, heartbeat, `it2`, launching and resuming sessions |
+| `migrate.rs` | transitional shim: carries `~/.local/state/mrdash/` and `~/.config/mrdash/` forward to their `messreq` names on first startup after the rename (messreq-c9j); deletable once every machine has picked it up |
 | `ui/` | `App` state (`app.rs`), cards (`card.rs`), the frame (`screen.rs`), popups (`popup.rs`), run modes and event loop (`mod.rs`) |
 | `notify.rs` | fingerprints, diffing between passes, delivery |
 | `time.rs` | `parse_iso8601`, `rel_age`, `age_days` |
@@ -45,15 +46,14 @@ Default visibility is `pub(crate)`; `pub` is reserved for what the binary actual
 
 Formatting is settled on plain rustfmt defaults, pinned by `rustfmt.toml`; `cargo fmt --check` must stay clean.
 
-### Three different names, don't mix them up
+### Naming
 
-| Where | Name | Status |
-|---|---|---|
-| Repository and directory | `messrequess` | current |
-| Future command, binary, brew formula | `messreq` | target |
-| Cargo package, binary, `~/.local/state/mrdash/`, launchd agent, `MRDASH_DEBUG` | `mrdash` | legacy |
+The repository and directory are `messrequess`. Everything inside the repository — the Cargo package, the binary, the CLI command, `MESSREQ_DEBUG`, and every path under `~/.local/state/` and `~/.config/` — is `messreq` (renamed in `messreq-c9j`). On startup, `migrate::migrate_legacy_paths` carries old `~/.local/state/mrdash/` and `~/.config/mrdash/` data across to the new paths automatically, once, so existing session bindings and notification state survive an upgrade.
 
-Renaming the legacy names is issue `messreq-c9j`: it is not a string replacement but a migration of the state directory plus a reconfiguration of the launchd agent. Until then the code and the paths live under `mrdash` — write them that way, don't "fix" them in passing.
+Two artifacts live outside the repository, on the machine that runs the tool, and are **not** touched by the code — they still carry the legacy name until someone updates them by hand:
+
+- the symlink `~/.local/bin/mrdash` → `target/release/mrdash` (a release build now produces `target/release/messreq`, so this symlink needs to move to `~/.local/bin/messreq` → `target/release/messreq`, or it goes stale);
+- the launchd agent `~/Library/LaunchAgents/com.nbogomolov.mrdash.notify.plist` (needs a new label and `ProgramArguments` pointing at the new binary).
 
 ## Status: preparing to go public
 
@@ -91,7 +91,7 @@ Pushing Dolt data takes more than a minute even on an empty database — that is
 ## Commands
 
 ```bash
-cargo build --release     # ~/.local/bin/mrdash is a symlink to target/release/mrdash,
+cargo build --release     # ~/.local/bin/messreq is a symlink to target/release/messreq,
                           # so a release build is a deploy
 cargo run                 # run the TUI from sources
 cargo fmt
@@ -117,15 +117,15 @@ You can build while the TUI is running — cargo writes a new file and swaps it 
 `cargo test` runs 36 unit tests over the pure functions: building and escaping the tab command, config parsing and path resolution, GitLab host resolution, and the prompt templates. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
 
 ```bash
-mrdash                    # TUI
-mrdash --plain            # (= --once) a single textual dump of the MR list
-mrdash --snapshot         # one TUI frame rendered to text via TestBackend
-                          # (118×46) — check the layout without a real terminal
-mrdash --prompt <iid>     # print the prompt (Surface mode) that would go to Claude
-mrdash --dump-prompts     # write the built-in prompt templates out to
-                          # ~/.config/mrdash/prompts/ (existing files are left alone)
-mrdash --notify           # a single pass of notification mode (see below)
-MRDASH_DEBUG=1 mrdash …   # diagnostics for failed glab calls + `glab auth status`
+messreq                    # TUI
+messreq --plain            # (= --once) a single textual dump of the MR list
+messreq --snapshot         # one TUI frame rendered to text via TestBackend
+                           # (118×46) — check the layout without a real terminal
+messreq --prompt <iid>     # print the prompt (Surface mode) that would go to Claude
+messreq --dump-prompts     # write the built-in prompt templates out to
+                           # ~/.config/messreq/prompts/ (existing files are left alone)
+messreq --notify           # a single pass of notification mode (see below)
+MESSREQ_DEBUG=1 messreq …  # diagnostics for failed glab calls + `glab auth status`
 ```
 
 ## External dependencies and environment
@@ -137,7 +137,7 @@ MRDASH_DEBUG=1 mrdash …   # diagnostics for failed glab calls + `glab auth sta
 
 ## Config
 
-`~/.config/mrdash/config.json` (or `$XDG_CONFIG_HOME/mrdash/config.json`) says where the local checkouts live. Without it there is nowhere to open a Claude session: the dashboard still works, but Enter shows a popup explaining the problem and pointing at the file.
+`~/.config/messreq/config.json` (or `$XDG_CONFIG_HOME/messreq/config.json`) says where the local checkouts live. Without it there is nowhere to open a Claude session: the dashboard still works, but Enter shows a popup explaining the problem and pointing at the file.
 
 ```json
 {
@@ -155,7 +155,7 @@ The format is JSON rather than TOML because `serde_json` is already a dependency
 
 ## State on disk
 
-Everything lives in `~/.local/state/mrdash/`:
+Everything lives in `~/.local/state/messreq/`:
 
 | File | Contents |
 |---|---|
@@ -183,7 +183,7 @@ The id of the new iTerm session is derived by diffing `it2 session list` snapsho
 
 **Prompt modes (`PromptMode`).** Enter gives `Surface` (for your own MR: "get it to approved"; for someone else's: a shallow review) for a new session, or the resume prompt (below) for reopening one. Shift+Enter (kitty keyboard protocol, if the terminal supports it) or `p` opens the menu: `MyThreads`, `Deep`, `Blank`. `build_prompt` assembles the prompt from a header, a task block, and a footer with glab hints; `sanitize_prompt` strips control characters but **keeps** newlines.
 
-**Prompt templates.** The prompt text is not baked into the code: each piece is a template, looked up first as `~/.config/mrdash/prompts/<name>.md`, then `<name>.txt` (back-compat for `.txt` customizations from before messreq-6x9), and only then falling back to the built-in default. The built-ins are Markdown files under `prompts/` at the repository root, pulled into the `TPL_*` constants (indexed by the `BUILTIN_PROMPTS` table in `prompt/builtin.rs`) with `include_str!` — editing a default prompt is a Markdown edit, not a `src/` edit. The names are `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `footer`. The syntax is `{var}` substitution plus a non-nesting `[[if var]]…[[else]]…[[end]]` block (the condition is "the variable is non-empty"); there is no template engine, just ~60 lines in `prompt/engine.rs`. The `threads` variable is an already-rendered list of threads and `count` is how many there are; which threads end up there is decided by the code — for your own MR in Surface mode (and for the resume prompt) it is every unresolved thread, otherwise only the threads you took part in. The per-thread line format (`threads_block`) stays in the code, because that is data rendering rather than task wording. `mrdash --dump-prompts` writes the defaults out to the config directory: a name that already has a `.md` file, or only a legacy `.txt` file, is left alone — writing a fresh `.md` next to an existing `.txt` would silently stop the `.txt` customization from being read, since `.md` is checked first.
+**Prompt templates.** The prompt text is not baked into the code: each piece is a template, looked up first as `~/.config/messreq/prompts/<name>.md`, then `<name>.txt` (back-compat for `.txt` customizations from before messreq-6x9), and only then falling back to the built-in default. The built-ins are Markdown files under `prompts/` at the repository root, pulled into the `TPL_*` constants (indexed by the `BUILTIN_PROMPTS` table in `prompt/builtin.rs`) with `include_str!` — editing a default prompt is a Markdown edit, not a `src/` edit. The names are `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `footer`. The syntax is `{var}` substitution plus a non-nesting `[[if var]]…[[else]]…[[end]]` block (the condition is "the variable is non-empty"); there is no template engine, just ~60 lines in `prompt/engine.rs`. The `threads` variable is an already-rendered list of threads and `count` is how many there are; which threads end up there is decided by the code — for your own MR in Surface mode (and for the resume prompt) it is every unresolved thread, otherwise only the threads you took part in. The per-thread line format (`threads_block`) stays in the code, because that is data rendering rather than task wording. `messreq --dump-prompts` writes the defaults out to the config directory: a name that already has a `.md` file, or only a legacy `.txt` file, is left alone — writing a fresh `.md` next to an existing `.txt` would silently stop the `.txt` customization from being read, since `.md` is checked first.
 
 **Resume prompt (`build_resume_prompt_line`, `resume_work`).** Reopening a session (`claude --resume <sid> "$(cat FILE)"` — the CLI accepts a prompt positionally alongside `--resume`, confirmed against the binary since it isn't documented either way) sends a prompt built from what changed since `--notify`'s last snapshot, not a repeat of the full context. `notify::last_fingerprint` reads the same `state.json` snapshot `--notify` maintains, and `notify::changes_since` (pure, mirrors what `diff` reports for notifications, and shares its `newly_added` set-diff helper) turns the previous fingerprint plus the current `MergeRequest` into a short bullet list — new approvals, the pipeline moving, new unresolved threads, the turn switching to you. The `resume` template gets two extra placeholders: `changes` (the rendered bullets, empty if nothing moved or nothing is known — e.g. `--notify` has never run) and `elapsed` (how long ago `state.json` was last written, from `notify::state_age`). `elapsed` deliberately does **not** come from `seen.json`'s last-acked `updated_at`: that dates the MR's own last change, not your visit or the snapshot the delta is based on, and pairing it with `changes` would silently date-mismatch the two.
 
@@ -195,7 +195,7 @@ More than four changes collapse into a single summary notification.
 
 ## Sibling project
 
-`mrdash-gui` (eframe) is a GUI variant of the same dashboard. It shares the state files with the TUI (`worktabs.json`, `seen.json`, `heartbeat`, `prompts/`) and touches the heartbeat too. If you change the format of those files or the semantics of the heartbeat, check that project as well.
+`mrdash-gui` (eframe) is a GUI variant of the same dashboard, in its own repository — not renamed by `messreq-c9j`, which only covers this repository. It shares the state files with the TUI (`worktabs.json`, `seen.json`, `heartbeat`, `prompts/`) and touches the heartbeat too. Those files now live under `~/.local/state/messreq/` on this side, and `migrate::migrate_legacy_paths` *moves* — not copies — the old `~/.local/state/mrdash/` there on first run. `mrdash-gui` still reads and writes `~/.local/state/mrdash/`, so after that move it finds nothing left, silently starts over with an empty state directory, and the two dashboards no longer share bindings/badges until `mrdash-gui` gets an equivalent rename. If you change the format of those files or the semantics of the heartbeat, check that project as well.
 
 
 <!-- BEGIN BEADS INTEGRATION v:1 profile:minimal hash:6cd5cc61 -->
