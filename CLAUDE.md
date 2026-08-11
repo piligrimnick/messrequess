@@ -22,7 +22,15 @@ It applies to future edits as well, not just the current state. If you touch a l
 
 A terminal dashboard (ratatui TUI) for GitLab merge requests: your own open MRs plus the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads, the merge train, and a computed "whose turn is it". Enter on a card opens a new iTerm2 tab with a Claude session that already has the MR context loaded.
 
-The crate depends only on `ratatui` and `serde_json`. Everything external happens through child processes: `glab`, `it2`, `claude`, `open`, `terminal-notifier`/`osascript`, `uuidgen`, `date`.
+The crate currently depends on `ratatui` and `serde_json`. Everything external happens through child processes: `glab`, `it2`, `claude`, `open`, `terminal-notifier`/`osascript`, `uuidgen`, `date`.
+
+### Dependencies: judge each one, there is no ban
+
+Two dependencies is where the project happens to be, not a rule it defends. Add one when it removes a meaningful amount of hand-written code or reduces the risk of getting something subtle wrong; skip it for trivia you would write once and never touch again.
+
+Worth weighing: how much code it actually saves, what it drags in transitively (check with `cargo tree`, don't guess), and whether it slows a cold build enough to matter for a tool people install from source.
+
+This is spelled out because the opposite once got treated as law. An earlier session inferred a "no new dependencies" rule from the short dependency list, recorded it here as if it were a project property, and then cited it back in task briefs — so the error type was hand-rolled instead of using `thiserror`, and `clap` was ruled out for `--help` before anyone weighed it. Decide on the merits, in both directions.
 
 ### Layout
 
