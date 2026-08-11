@@ -23,6 +23,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use crate::error::WorkError;
 use crate::model::Mr;
 
 #[derive(Default)]
@@ -103,28 +104,24 @@ impl Config {
     }
 }
 
-/// The directory in which to open Claude for this MR. `Err` is ready-made text
-/// to show the user: failing to open a session silently is worse than saying why.
-pub(crate) fn work_dir_for_mr(mr: &Mr) -> Result<String, String> {
+/// The directory in which to open Claude for this MR. `Err` carries enough to
+/// build the ready-made-JSON popup text the user needs: failing to open a
+/// session silently is worse than saying why.
+pub(crate) fn work_dir_for_mr(mr: &Mr) -> Result<String, WorkError> {
     let cfg = Config::load();
     let file = config_path();
     let Some(dir) = cfg.work_dir_for(&mr.path, &home_dir()) else {
-        return Err(format!(
-            "I don't know where the local copy of project {} lives.\n\nAdd the path to {}:\n\n\
-             {{\n  \"projects\": {{\n    \"{}\": \"~/src/…\"\n  }}\n}}\n\n\
-             Or set \"default_path\" — it is used for every project that has no \
-             entry of its own.",
-            mr.path,
-            file.display(),
-            mr.path,
-        ));
+        return Err(WorkError::NoWorkDir {
+            project: mr.path.clone(),
+            config_path: file,
+        });
     };
     if !std::path::Path::new(&dir).is_dir() {
-        return Err(format!(
-            "Directory {dir} (project {}) does not exist.\n\nFix the path in {}.",
-            mr.path,
-            file.display(),
-        ));
+        return Err(WorkError::WorkDirMissing {
+            dir,
+            project: mr.path.clone(),
+            config_path: file,
+        });
     }
     Ok(dir)
 }

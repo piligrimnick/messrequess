@@ -15,6 +15,7 @@ use app::{App, PromptMenu};
 use card::truncate;
 use screen::ui;
 
+use crate::error::WorkError;
 use crate::model::Mr;
 use crate::prompt::PromptMode;
 use crate::time::rel_age;
@@ -109,7 +110,7 @@ fn launch_work(app: &mut App, item: usize, mode: PromptMode) {
             save_worktabs(&app.work);
             app.refresh_alive();
         }
-        Err(msg) => app.notice = Some(msg),
+        Err(err) => app.notice = Some(err.to_string()),
     }
     app.mark_seen(item);
 }
@@ -205,7 +206,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                             let key = mr_key(&app.items[i]);
                             let existing = app.work.get(&key).cloned();
                             // None — the tab is already open, we only focused it.
-                            let new_entry: Option<Result<serde_json::Value, String>> =
+                            let new_entry: Option<Result<serde_json::Value, WorkError>> =
                                 match existing {
                                     Some(e) => {
                                         let sid =
@@ -225,7 +226,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                                     save_worktabs(&app.work);
                                     app.refresh_alive();
                                 }
-                                Some(Err(msg)) => app.notice = Some(msg),
+                                Some(Err(err)) => app.notice = Some(err.to_string()),
                                 None => {}
                             }
                             app.mark_seen(i);

@@ -24,6 +24,7 @@ use std::time::Duration;
 use serde_json::json;
 
 use crate::config::work_dir_for_mr;
+use crate::error::WorkError;
 use crate::model::Mr;
 use crate::prompt::{build_prompt_line, PromptMode};
 
@@ -179,7 +180,7 @@ fn claude_script(work_dir: &str, args: &str) -> String {
 }
 
 /// Open a new iTerm2 tab with claude for this MR (with a fixed session id).
-pub(crate) fn start_work(mr: &Mr, mode: PromptMode) -> Result<serde_json::Value, String> {
+pub(crate) fn start_work(mr: &Mr, mode: PromptMode) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = uuid();
     let name = format!("MR !{}", mr.iid);
@@ -202,7 +203,10 @@ pub(crate) fn start_work(mr: &Mr, mode: PromptMode) -> Result<serde_json::Value,
 }
 
 /// Resume an existing claude session by its id in a new tab.
-pub(crate) fn resume_work(mr: &Mr, entry: &serde_json::Value) -> Result<serde_json::Value, String> {
+pub(crate) fn resume_work(
+    mr: &Mr,
+    entry: &serde_json::Value,
+) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = entry["claude_session"].as_str().unwrap_or("").to_string();
     let default = format!("MR !{}", mr.iid);
@@ -265,7 +269,7 @@ fn wrap_for_tab(script: &str) -> String {
 /// we keep pushing Enter into that session (it2 sometimes does not submit the
 /// input on its own). We return an entry only when the launch is confirmed —
 /// otherwise Err (no false "open" states that cannot be resumed).
-fn open_tab_capture(cmd: &str, sid: String, name: String) -> Result<serde_json::Value, String> {
+fn open_tab_capture(cmd: &str, sid: String, name: String) -> Result<serde_json::Value, WorkError> {
     let sentinel = prompts_dir().join(format!("{sid}.started"));
     let _ = std::fs::remove_file(&sentinel);
     let full = wrap_for_tab(&format!(
@@ -308,11 +312,7 @@ fn open_tab_capture(cmd: &str, sid: String, name: String) -> Result<serde_json::
     let _ = std::fs::remove_file(&sentinel);
 
     if !started {
-        return Err(
-            "The iTerm2 tab opened, but the command in it never confirmed the launch.\n\n\
-             Check that `it2` and `claude` work."
-                .to_string(),
-        );
+        return Err(WorkError::LaunchNotConfirmed);
     }
     Ok(json!({
         "claude_session": sid,
