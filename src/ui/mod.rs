@@ -205,6 +205,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                             app.refresh_alive();
                             let key = mr_key(&app.items[i]);
                             let existing = app.work.get(&key).cloned();
+                            // The last acked updated_at for this MR — still the
+                            // pre-visit value here (mark_seen runs below) — the
+                            // reference point for "what changed" in the resume
+                            // prompt.
+                            let last_seen = app
+                                .seen
+                                .get(&key)
+                                .and_then(|v| v.as_str())
+                                .map(String::from);
                             // None — the tab is already open, we only focused it.
                             let new_entry: Option<Result<serde_json::Value, WorkError>> =
                                 match existing {
@@ -215,7 +224,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                                             focus_iterm(&sid);
                                             None
                                         } else {
-                                            Some(resume_work(&app.items[i], &e))
+                                            Some(resume_work(
+                                                &app.items[i],
+                                                &e,
+                                                last_seen.as_deref(),
+                                            ))
                                         }
                                     }
                                     None => Some(start_work(&app.items[i], PromptMode::Surface)),

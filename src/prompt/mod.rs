@@ -1,10 +1,17 @@
 //! The prompt handed to Claude when a session is opened for an MR.
 //!
 //! The text is not hardcoded: every piece is a template. We first look for the
-//! file `~/.config/mrdash/prompts/<name>.txt`, and only if it is missing do we
+//! file `~/.config/mrdash/prompts/<name>.md`, and only if it is missing do we
 //! fall back to the built-in default (see `builtin`). That way the tool works
 //! with no configuration at all, while the wording can be tailored to your own
 //! project without a rebuild.
+//!
+//! Templates moved from `.txt` to `.md` in messreq-6x9 — a prompt is
+//! structured text a human edits, and Markdown gives headings, lists and
+//! syntax highlighting in an editor that plain text does not. A `.txt` file
+//! left over from an older `mrdash` (`--dump-prompts` used to write those)
+//! still works: `Templates::get` falls back to it when no `.md` file exists
+//! for that name.
 //!
 //! Template syntax (see `engine`):
 //!   `{var}`                          — variable substitution (an unknown name
@@ -21,6 +28,9 @@
 //!   in Surface mode — every unresolved one, in all other cases — only the
 //!   threads you took part in. Write conditions against `threads`: `count` is
 //!   "0" when there are none, which counts as non-empty.
+//!   The `resume` template additionally gets `changes` (a rendered bullet
+//!   list of what moved since the session was last seen — empty if nothing
+//!   did or nothing is known) and `elapsed` (how long ago that was).
 
 mod builtin;
 mod engine;
@@ -33,6 +43,7 @@ use builtin::{builtin_template, prompt_templates_dir};
 use engine::render_template;
 
 use crate::model::{MergeRequest, Thread};
+use crate::notify::{changes_since, last_fingerprint};
 use crate::time::rel_age;
 
 /// The prompt mode used when opening Claude (picked in the Shift+Enter menu).
@@ -85,6 +96,11 @@ impl Templates {
 
     fn get(&self, name: &str) -> String {
         if let Some(dir) = &self.dir {
+            if let Ok(s) = std::fs::read_to_string(dir.join(format!("{name}.md"))) {
+                return s;
+            }
+            // Back-compat: a customization saved before the .md migration
+            // (messreq-6x9) still wins over the built-in default.
             if let Ok(s) = std::fs::read_to_string(dir.join(format!("{name}.txt"))) {
                 return s;
             }
@@ -107,17 +123,12 @@ fn prompt_vars(mr: &MergeRequest, threads: &[&Thread]) -> HashMap<&'static str, 
     v.insert("merge_status", mr.merge_status.to_string());
     v.insert(
         "conflicts",
-        if mr.conflicts {
-            " · ЕСТЬ КОНФЛИКТЫ"
-        } else {
-            ""
-        }
-        .to_string(),
+        if mr.conflicts { " · CONFLICTS" } else { "" }.to_string(),
     );
     v.insert(
         "approvals",
         if mr.approved_by.is_empty() {
-            "нет".into()
+            "none".into()
         } else {
             mr.approved_by.join(", ")
         },
@@ -125,7 +136,7 @@ fn prompt_vars(mr: &MergeRequest, threads: &[&Thread]) -> HashMap<&'static str, 
     v.insert(
         "reviewers",
         if mr.reviewers.is_empty() {
-            "—".into()
+            "none".into()
         } else {
             mr.reviewers.join(", ")
         },
@@ -142,11 +153,22 @@ fn threads_block<'a>(threads: impl Iterator<Item = &'a Thread>) -> String {
     for t in threads {
         let body: String = t.body.chars().take(240).collect();
         s += &format!(
-            "   - [начал {}, последний ответ {}, {} нот] {}\n",
+            "   - [started by {}, last reply by {}, {} note(s)] {}\n",
             t.author, t.last_author, t.notes, body
         );
     }
     s
+}
+
+/// Threads relevant to a "your own MR" plan (every unresolved thread) versus
+/// any other mode (only the ones you took part in). Shared by the regular
+/// prompt (own MR + Surface) and the resume prompt, which uses the same rule.
+fn relevant_threads(mr: &MergeRequest, own_mr_plan: bool) -> Vec<&Thread> {
+    if own_mr_plan {
+        mr.unresolved.iter().collect()
+    } else {
+        mr.unresolved.iter().filter(|t| t.mine).collect()
+    }
 }
 
 /// The formatted (multi-line) context for claude in the selected mode.
@@ -165,11 +187,7 @@ fn build_prompt(mr: &MergeRequest, mode: PromptMode, tpl: &Templates) -> String 
     // cases we take only the threads I took part in — other people's
     // discussions do not need to be worked through.
     let own_mr_plan = mode == PromptMode::Surface && mr.mine;
-    let threads: Vec<&Thread> = if own_mr_plan {
-        mr.unresolved.iter().collect()
-    } else {
-        mr.unresolved.iter().filter(|t| t.mine).collect()
-    };
+    let threads = relevant_threads(mr, own_mr_plan);
     let body = match mode {
         PromptMode::Surface if mr.mine => "surface_mine",
         PromptMode::Surface => "surface_other",
@@ -186,6 +204,58 @@ fn build_prompt(mr: &MergeRequest, mode: PromptMode, tpl: &Templates) -> String 
     s += "\n\n";
     s += render_template(&tpl.get("footer"), &vars).trim_end();
     sanitize_prompt(&s)
+}
+
+/// The prompt used to reopen a session (`resume_work`): what moved on the MR
+/// since it was last seen, not a repeat of the full context — the session
+/// already has that from when it started. `last_seen` is the `updated_at`
+/// recorded in `seen.json` the last time this MR was looked at (`None` if it
+/// was never acked, which should not normally happen for a resume).
+///
+/// The delta itself comes from `--notify`'s state snapshot
+/// (`notify::last_fingerprint` / `notify::changes_since`) — reused rather
+/// than recomputed, since `--notify` already tracks exactly this: approvals,
+/// pipeline, and whose turn it is, one poll at a time. The disk read lives
+/// only here; `build_resume_prompt` below stays pure and is what the tests
+/// exercise, the same split `notify::notify_mode` / `notify::compute` uses.
+pub fn build_resume_prompt_line(mr: &MergeRequest, last_seen: Option<&str>) -> String {
+    let prev = last_fingerprint(&mr.storage_key());
+    build_resume_prompt(mr, last_seen, prev.as_ref(), &Templates::load())
+}
+
+fn build_resume_prompt(
+    mr: &MergeRequest,
+    last_seen: Option<&str>,
+    prev: Option<&serde_json::Value>,
+    tpl: &Templates,
+) -> String {
+    let deltas = changes_since(prev, mr);
+
+    let threads = relevant_threads(mr, mr.mine);
+    let mut vars = prompt_vars(mr, &threads);
+    vars.insert("changes", changes_block(&deltas));
+    vars.insert(
+        "elapsed",
+        last_seen
+            .map(rel_age)
+            .unwrap_or_else(|| "a while".to_string()),
+    );
+
+    let mut s = String::new();
+    s += render_template(&tpl.get("header"), &vars).trim_end();
+    s += "\n\n";
+    s += render_template(&tpl.get("resume"), &vars).trim_end();
+    s += "\n\n";
+    s += render_template(&tpl.get("footer"), &vars).trim_end();
+    sanitize_prompt(&s)
+}
+
+fn changes_block(deltas: &[String]) -> String {
+    let mut s = String::new();
+    for d in deltas {
+        s += &format!("- {d}\n");
+    }
+    s
 }
 
 /// Hygiene for the claude argument: drop control bytes (ESC and friends coming
@@ -282,8 +352,8 @@ mod tests {
             "{p}"
         );
         assert!(p.contains("URL: https://gitlab.example.com/group/project/-/merge_requests/42"));
-        assert!(p.contains("Апрувы: нет"));
-        assert!(p.contains("Ревьюеры: bob"));
+        assert!(p.contains("Approvals: none"));
+        assert!(p.contains("Reviewers: bob"));
         assert!(p.contains("glab mr diff 42 -R group/project"), "{p}");
     }
 
@@ -297,8 +367,8 @@ mod tests {
             ],
         );
         let p = build_prompt(&m, PromptMode::Surface, &Templates::builtin());
-        assert!(p.contains("это твой MR"), "{p}");
-        assert!(p.contains("Незакрытые треды (2):"), "{p}");
+        assert!(p.contains("This is your MR"), "{p}");
+        assert!(p.contains("Unresolved threads (2):"), "{p}");
         assert!(p.contains("needs an index") && p.contains("agreed"), "{p}");
     }
 
@@ -309,8 +379,8 @@ mod tests {
             PromptMode::Surface,
             &Templates::builtin(),
         );
-        assert!(p.contains("Незакрытых тредов нет"), "{p}");
-        assert!(!p.contains("Незакрытые треды ("), "{p}");
+        assert!(p.contains("No unresolved threads"), "{p}");
+        assert!(!p.contains("Unresolved threads ("), "{p}");
     }
 
     #[test]
@@ -323,8 +393,8 @@ mod tests {
             ],
         );
         let p = build_prompt(&m, PromptMode::Surface, &Templates::builtin());
-        assert!(p.contains("поверхностное ревью"), "{p}");
-        assert!(p.contains("с твоим участием (1)"), "{p}");
+        assert!(p.contains("surface review"), "{p}");
+        assert!(p.contains("Threads you're already in (1)"), "{p}");
         assert!(p.contains("my own thread"), "{p}");
         assert!(!p.contains("someone else's thread"), "{p}");
     }
@@ -333,7 +403,7 @@ mod tests {
     fn my_threads_mode_without_my_threads_stops_early() {
         let m = mr(false, vec![thread("bob", "someone else's thread", false)]);
         let p = build_prompt(&m, PromptMode::MyThreads, &Templates::builtin());
-        assert!(p.contains("Незакрытых тредов с твоим участием нет"), "{p}");
+        assert!(p.contains("You have no open threads on this MR"), "{p}");
         assert!(!p.contains("someone else's thread"), "{p}");
     }
 
@@ -341,7 +411,7 @@ mod tests {
     fn deep_mode_is_project_agnostic() {
         let m = mr(false, vec![thread("me", "my own thread", true)]);
         let p = build_prompt(&m, PromptMode::Deep, &Templates::builtin());
-        assert!(p.contains("глубокое ревью по полному диффу"), "{p}");
+        assert!(p.contains("deep review of the full diff"), "{p}");
         assert!(p.contains("my own thread"), "{p}");
         for domain_specific in ["firm_id", "RLS", "TaxDome", "taxdome"] {
             assert!(
@@ -352,19 +422,85 @@ mod tests {
     }
 
     #[test]
-    fn user_template_overrides_builtin() {
+    fn user_md_template_overrides_builtin() {
         let dir = std::env::temp_dir().join(format!("mrdash-prompts-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("deep.txt"), "A custom template for !{iid}\n").unwrap();
+        std::fs::write(dir.join("deep.md"), "A custom template for !{iid}\n").unwrap();
         let tpl = Templates {
             dir: Some(dir.clone()),
         };
         let p = build_prompt(&mr(false, vec![]), PromptMode::Deep, &tpl);
         let _ = std::fs::remove_dir_all(&dir);
         assert!(p.contains("A custom template for !42"), "{p}");
-        assert!(!p.contains("глубокое ревью"), "{p}");
+        assert!(!p.contains("deep review"), "{p}");
         // the header and the footer still come from the built-ins
         assert!(p.contains("Merge request group/project!42"), "{p}");
         assert!(p.contains("glab mr view 42"), "{p}");
+    }
+
+    #[test]
+    fn legacy_txt_template_still_overrides_when_no_md_exists() {
+        let dir =
+            std::env::temp_dir().join(format!("mrdash-prompts-legacy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("deep.txt"), "A legacy .txt template for !{iid}\n").unwrap();
+        let tpl = Templates {
+            dir: Some(dir.clone()),
+        };
+        let p = build_prompt(&mr(false, vec![]), PromptMode::Deep, &tpl);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(p.contains("A legacy .txt template for !42"), "{p}");
+    }
+
+    #[test]
+    fn md_template_wins_over_a_coexisting_legacy_txt() {
+        let dir = std::env::temp_dir().join(format!("mrdash-prompts-both-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("deep.txt"), "old txt version\n").unwrap();
+        std::fs::write(dir.join("deep.md"), "new md version\n").unwrap();
+        let tpl = Templates {
+            dir: Some(dir.clone()),
+        };
+        let p = build_prompt(&mr(false, vec![]), PromptMode::Deep, &tpl);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(p.contains("new md version"), "{p}");
+        assert!(!p.contains("old txt version"), "{p}");
+    }
+
+    #[test]
+    fn resume_prompt_reports_no_changes_when_nothing_is_known() {
+        let p = build_resume_prompt(&mr(true, vec![]), None, None, &Templates::builtin());
+        assert!(p.contains("No tracked changes"), "{p}");
+        assert!(p.contains("a while"), "{p}");
+        // Still the same MR context — header/footer are not dropped.
+        assert!(p.starts_with("Merge request group/project!42"), "{p}");
+        assert!(p.contains("glab mr diff 42"), "{p}");
+    }
+
+    #[test]
+    fn resume_prompt_uses_last_seen_for_elapsed() {
+        let p = build_resume_prompt(
+            &mr(true, vec![]),
+            Some("2026-01-02T00:00:00.000Z"),
+            None,
+            &Templates::builtin(),
+        );
+        assert!(!p.contains("a while"), "{p}");
+    }
+
+    #[test]
+    fn resume_prompt_renders_deltas_from_a_previous_fingerprint() {
+        let prev = serde_json::json!({
+            "approvals": [],
+            "pipeline": "running",
+            "unresolved": 0,
+            "actionable": false,
+        });
+        let mut m = mr(true, vec![]);
+        m.pipeline = CiStatus::Failed;
+        let p = build_resume_prompt(&m, None, Some(&prev), &Templates::builtin());
+        assert!(p.contains("Since you last looked"), "{p}");
+        assert!(p.contains("running") && p.contains("failed"), "{p}");
+        assert!(!p.contains("No tracked changes"), "{p}");
     }
 }

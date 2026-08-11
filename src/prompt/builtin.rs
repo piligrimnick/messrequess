@@ -1,52 +1,30 @@
 //! The built-in prompt templates and the directory they can be overridden in.
 //!
+//! The template bodies are not Rust string literals: they are Markdown files
+//! under `prompts/` at the repository root, pulled in with `include_str!` so
+//! that editing a default prompt is a Markdown edit, not a `src/` edit.
+//!
 //! `mrdash --dump-prompts` writes the defaults out so that there is something
 //! to edit; existing files are left alone.
 
 use std::path::PathBuf;
 
-const TPL_HEADER: &str = r#"Merge request {path}!{iid}: {title}
-URL: {url}
-Автор: {author} · {state} · пайплайн: {pipeline} · мерж-статус: {merge_status}{conflicts}
-Апрувы: {approvals}
-Ревьюеры: {reviewers}
-Открыт: {created_ago} назад · последняя активность: {updated_ago} назад
-"#;
+const TPL_HEADER: &str = include_str!("../../prompts/header.md");
+const TPL_FOOTER: &str = include_str!("../../prompts/footer.md");
+const TPL_SURFACE_MINE: &str = include_str!("../../prompts/surface_mine.md");
+const TPL_SURFACE_OTHER: &str = include_str!("../../prompts/surface_other.md");
+const TPL_MY_THREADS: &str = include_str!("../../prompts/my_threads.md");
+const TPL_DEEP: &str = include_str!("../../prompts/deep.md");
+const TPL_RESUME: &str = include_str!("../../prompts/resume.md");
 
-const TPL_FOOTER: &str = r#"Детали тяни через glab (проект {path}):
-  glab mr view {iid} -R {path}
-  glab mr diff {iid} -R {path}
-"#;
-
-const TPL_SURFACE_MINE: &str = r#"Задача: это твой MR. Определи, что нужно сделать, чтобы довести его до approved — ответить на комментарии ревьюеров, внести правки в код, зарезолвить треды, починить упавший CI и разрешить конфликты. Сначала подтяни дифф и обсуждения, затем дай конкретный план: что ответить в каждом треде и какие изменения внести.
-[[if threads]]
-Незакрытые треды ({count}):
-{threads}[[else]]
-Незакрытых тредов нет — проверь, что блокирует апрув (CI, конфликты, отсутствие ревьюеров).
-[[end]]"#;
-
-const TPL_SURFACE_OTHER: &str = r#"Задача:
-1. Сделай поверхностное ревью изменений и укажи узкие места — на что стоит обратить внимание (риски, потенциальные баги, спорные решения). Треды, в которых ты не участвовал, разбирать не нужно.
-[[if threads]]2. В MR есть незакрытые треды с твоим участием ({count}) — разбери их и предложи, как ответить или закрыть:
-{threads}[[end]]"#;
-
-const TPL_MY_THREADS: &str = r#"Задача:
-[[if threads]]Разбери незакрытые треды с твоим участием ({count}) и предложи, как ответить или закрыть каждый. Общее ревью изменений делать не нужно:
-{threads}[[else]]Незакрытых тредов с твоим участием нет — коротко сообщи об этом и остановись.
-[[end]]"#;
-
-const TPL_DEEP: &str = r#"Задача:
-Сделай глубокое ревью по полному диффу: архитектура и границы модулей, корректность, крайние случаи, обработка ошибок, безопасность (авторизация, доступ к данным, валидация ввода), производительность (лишние запросы к БД, тяжёлые циклы), покрытие тестами. По каждому пункту — конкретные места в коде и что именно поправить. Сначала обязательно подтяни полный дифф.
-[[if threads]]Также в MR есть незакрытые треды с твоим участием ({count}) — учти их:
-{threads}[[end]]"#;
-
-/// Every template: file name (without `.txt`) → the built-in default.
-const BUILTIN_PROMPTS: [(&str, &str); 6] = [
+/// Every template: file name (without the extension) → the built-in default.
+const BUILTIN_PROMPTS: [(&str, &str); 7] = [
     ("header", TPL_HEADER),
     ("surface_mine", TPL_SURFACE_MINE),
     ("surface_other", TPL_SURFACE_OTHER),
     ("my_threads", TPL_MY_THREADS),
     ("deep", TPL_DEEP),
+    ("resume", TPL_RESUME),
     ("footer", TPL_FOOTER),
 ];
 
@@ -65,6 +43,15 @@ pub(crate) fn builtin_template(name: &str) -> &'static str {
 
 /// Write the built-in templates into `~/.config/mrdash/prompts/` so that there
 /// is something to edit. Existing files are left alone — the user's edits win.
+///
+/// Templates moved from `.txt` to `.md` in messreq-6x9. A name that already
+/// has a `.md` file is left alone (the normal "don't overwrite" rule). A name
+/// that has no `.md` file but does have a leftover `.txt` from an older
+/// `mrdash` is *also* left alone — writing the `.md` default next to it would
+/// silently stop `Templates::get` from reading the user's customization,
+/// since the new lookup order checks `.md` first. The `.txt` file keeps
+/// working as an override either way (see `Templates::get`); nothing is
+/// migrated automatically.
 pub fn dump_default_prompts() {
     dump_default_prompts_into(&prompt_templates_dir());
 }
@@ -75,14 +62,24 @@ fn dump_default_prompts_into(dir: &std::path::Path) {
         return;
     }
     for (name, body) in BUILTIN_PROMPTS {
-        let path = dir.join(format!("{name}.txt"));
-        if path.exists() {
-            println!("already there, leaving it alone: {}", path.display());
+        let md_path = dir.join(format!("{name}.md"));
+        let legacy_txt_path = dir.join(format!("{name}.txt"));
+        if md_path.exists() {
+            println!("already there, leaving it alone: {}", md_path.display());
             continue;
         }
-        match std::fs::write(&path, body) {
-            Ok(()) => println!("written: {}", path.display()),
-            Err(e) => eprintln!("not written {}: {e}", path.display()),
+        if legacy_txt_path.exists() {
+            println!(
+                "found a pre-{}.md customization at {} — leaving it, not writing {}",
+                name,
+                legacy_txt_path.display(),
+                md_path.display()
+            );
+            continue;
+        }
+        match std::fs::write(&md_path, body) {
+            Ok(()) => println!("written: {}", md_path.display()),
+            Err(e) => eprintln!("not written {}: {e}", md_path.display()),
         }
     }
 }
@@ -96,13 +93,31 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("mrdash-dump-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("deep.txt"), "mine").unwrap();
+        std::fs::write(dir.join("deep.md"), "mine").unwrap();
         dump_default_prompts_into(&dir);
-        let deep = std::fs::read_to_string(dir.join("deep.txt")).unwrap();
-        let header = std::fs::read_to_string(dir.join("header.txt")).unwrap();
+        let deep = std::fs::read_to_string(dir.join("deep.md")).unwrap();
+        let header = std::fs::read_to_string(dir.join("header.md")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(deep, "mine", "an existing file was overwritten");
         assert_eq!(header, TPL_HEADER);
+    }
+
+    #[test]
+    fn dump_does_not_shadow_a_pre_existing_legacy_txt_customization() {
+        let dir =
+            std::env::temp_dir().join(format!("mrdash-dump-legacy-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("deep.txt"), "my old customization").unwrap();
+        dump_default_prompts_into(&dir);
+        let md_written = dir.join("deep.md").exists();
+        let legacy = std::fs::read_to_string(dir.join("deep.txt")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !md_written,
+            "a fresh deep.md would shadow the .txt customization via Templates::get"
+        );
+        assert_eq!(legacy, "my old customization");
     }
 
     #[test]
