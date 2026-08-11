@@ -152,9 +152,12 @@ pub(crate) struct Thread {
 /// only; provider vocabulary must not reach past the adapter that produced it.
 #[derive(Clone)]
 pub struct MergeRequest {
-    /// Opaque provider identity — see `ForgeId`. Fields inside it that
-    /// nothing reads yet (beyond `number()`/`storage_key()`) are kept for
-    /// the same reason as `Thread::id`: approve/reply/resolve need them.
+    /// Opaque provider identity — see `ForgeId`. Already read today, by
+    /// `number()`/`storage_key()` and directly by the GitLab adapter (to
+    /// build API paths); kept as a typed identity rather than collapsed into
+    /// a URL for the same reason `Thread::id` is kept: actions like approve/
+    /// reply/resolve need the provider's own identifiers back, not just a
+    /// link a human can click.
     pub(crate) id: ForgeId,
     pub(crate) path: String, // acme/backend
     pub(crate) url: String,
