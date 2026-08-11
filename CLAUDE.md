@@ -59,10 +59,12 @@ Formatting is settled on plain rustfmt defaults, pinned by `rustfmt.toml`; `carg
 
 The repository and directory are `messrequess`. Everything inside the repository — the Cargo package, the binary, the CLI command, `MESSREQ_DEBUG`, and every path under `~/.local/state/` and `~/.config/` — is `messreq` (renamed in `messreq-c9j`). On startup, `migrate::migrate_legacy_paths` carries old `~/.local/state/mrdash/` and `~/.config/mrdash/` data across to the new paths automatically, once, so existing session bindings and notification state survive an upgrade.
 
-Two artifacts live outside the repository, on the machine that runs the tool, and are **not** touched by the code — they still carry the legacy name until someone updates them by hand:
+Two artifacts live outside the repository, on the machine that runs the tool, so the code cannot rename them — they were updated by hand when the rename landed:
 
-- the symlink `~/.local/bin/mrdash` → `target/release/mrdash` (a release build now produces `target/release/messreq`, so this symlink needs to move to `~/.local/bin/messreq` → `target/release/messreq`, or it goes stale);
-- the launchd agent `~/Library/LaunchAgents/com.nbogomolov.mrdash.notify.plist` (needs a new label and `ProgramArguments` pointing at the new binary).
+- the symlink is now `~/.local/bin/messreq` → `target/release/messreq` (a release build produces `target/release/messreq`, so the old `mrdash` symlink was removed rather than left to go stale);
+- the launchd agent is now `~/Library/LaunchAgents/com.nbogomolov.messreq.notify.plist`, label `com.nbogomolov.messreq.notify`, running the new binary every 300 seconds and logging into `~/.local/state/messreq/`.
+
+Anyone setting this up on another machine has to do both steps themselves; nothing in the build does it.
 
 ## Status: preparing to go public
 
