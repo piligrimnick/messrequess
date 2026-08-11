@@ -6,24 +6,26 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 
-use crate::model::Mr;
+use crate::model::{CiStatus, MergeRequest};
 use crate::time::{age_days, rel_age};
 
-fn pipe_glyph(status: &str) -> Span<'static> {
+fn pipe_glyph(status: CiStatus) -> Span<'static> {
     let (sym, col) = match status {
-        "success" => ("🟢", Color::Green),
-        "running" | "pending" | "created" | "waiting_for_resource" | "preparing" => {
-            ("🟠", Color::Yellow)
-        }
-        "failed" => ("🔴", Color::Red),
-        "canceled" | "skipped" => ("⚪", Color::DarkGray),
-        _ => ("··", Color::DarkGray),
+        CiStatus::Success => ("🟢", Color::Green),
+        CiStatus::Running => ("🟠", Color::Yellow),
+        CiStatus::Failed => ("🔴", Color::Red),
+        CiStatus::Skipped => ("⚪", Color::DarkGray),
+        CiStatus::Unknown => ("··", Color::DarkGray),
     };
     Span::styled(sym, Style::default().fg(col))
 }
 
 /// The meta line inside a card: [🆕] approvals/author · pipeline · threads · timings · work.
-fn meta_line(mr: &Mr, work: Option<(bool, &serde_json::Value)>, is_new: bool) -> Line<'static> {
+fn meta_line(
+    mr: &MergeRequest,
+    work: Option<(bool, &serde_json::Value)>,
+    is_new: bool,
+) -> Line<'static> {
     let mut s = vec![];
     if is_new {
         s.push(Span::styled(
@@ -49,7 +51,7 @@ fn meta_line(mr: &Mr, work: Option<(bool, &serde_json::Value)>, is_new: bool) ->
         ));
     }
     s.push(Span::raw("     "));
-    s.push(pipe_glyph(&mr.pipeline));
+    s.push(pipe_glyph(mr.pipeline));
     s.push(Span::styled(
         format!(" {}", mr.pipeline),
         Style::default().fg(Color::DarkGray),
@@ -82,22 +84,22 @@ fn meta_line(mr: &Mr, work: Option<(bool, &serde_json::Value)>, is_new: bool) ->
         format!(" · ✎ {}", rel_age(&mr.updated_at)),
         Style::default().fg(upd_col),
     ));
-    if let Some(t) = &mr.train {
-        let pcol = match t.pipeline.as_str() {
-            "failed" => Color::Red,
-            "running" | "pending" | "created" => Color::Yellow,
-            "success" => Color::Green,
-            _ => Color::DarkGray,
+    if let Some(q) = &mr.queue {
+        let pcol = match q.status {
+            CiStatus::Failed => Color::Red,
+            CiStatus::Running => Color::Yellow,
+            CiStatus::Success => Color::Green,
+            CiStatus::Skipped | CiStatus::Unknown => Color::DarkGray,
         };
         s.push(Span::raw("     "));
         s.push(Span::styled(
-            format!("🚄 train #{}", t.position),
+            format!("🚄 train #{}", q.position),
             Style::default()
                 .fg(Color::LightMagenta)
                 .add_modifier(Modifier::BOLD),
         ));
         s.push(Span::styled(
-            format!(" · {}", t.pipeline),
+            format!(" · {}", q.status),
             Style::default().fg(pcol),
         ));
     }
@@ -128,7 +130,7 @@ fn meta_line(mr: &Mr, work: Option<(bool, &serde_json::Value)>, is_new: bool) ->
 pub(crate) fn render_card(
     f: &mut Frame,
     area: ratatui::layout::Rect,
-    mr: &Mr,
+    mr: &MergeRequest,
     work: Option<(bool, &serde_json::Value)>,
     selected: bool,
     is_new: bool,
@@ -145,9 +147,9 @@ pub(crate) fn render_card(
         Style::default().fg(sev)
     };
     let left = if selected {
-        format!(" ▶ !{} ", mr.iid)
+        format!(" ▶ !{} ", mr.number())
     } else {
-        format!(" !{} ", mr.iid)
+        format!(" !{} ", mr.number())
     };
 
     let mut block = Block::default()

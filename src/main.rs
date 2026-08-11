@@ -1,6 +1,6 @@
 //! The `mrdash` command: parse the arguments and dispatch to a run mode.
 
-use mrdash::gitlab::{load, me_username};
+use mrdash::forge::{Forge, GitlabForge};
 use mrdash::notify::notify_mode;
 use mrdash::prompt::{build_prompt_line, dump_default_prompts, PromptMode};
 use mrdash::ui;
@@ -21,14 +21,15 @@ fn main() -> std::io::Result<()> {
         return Ok(());
     }
 
-    let me = me_username();
+    let forge = GitlabForge;
+    let me = forge.me();
     if me == "unknown" {
         eprintln!("Could not determine the user via `glab api user`. Is glab authenticated?");
         std::process::exit(1);
     }
 
     if std::env::args().any(|a| a == "--plain" || a == "--once") {
-        let items = load(&me);
+        let items = forge.open_merge_requests(&me);
         ui::print_plain(&items);
         return Ok(());
     }
@@ -42,8 +43,8 @@ fn main() -> std::io::Result<()> {
     let args: Vec<String> = std::env::args().collect();
     if let Some(pos) = args.iter().position(|a| a == "--prompt") {
         let iid: u64 = args.get(pos + 1).and_then(|s| s.parse().ok()).unwrap_or(0);
-        let items = load(&me);
-        match items.iter().find(|m| m.iid == iid) {
+        let items = forge.open_merge_requests(&me);
+        match items.iter().find(|m| m.number() == iid) {
             Some(mr) => println!("{}", build_prompt_line(mr, PromptMode::Surface)),
             None => eprintln!("MR !{iid} not found among your own / reviewed MRs"),
         }

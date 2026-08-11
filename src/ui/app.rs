@@ -7,8 +7,8 @@ use std::time::Instant;
 
 use serde_json::json;
 
-use crate::gitlab::load;
-use crate::model::Mr;
+use crate::forge::{Forge, GitlabForge};
+use crate::model::MergeRequest;
 use crate::work::{
     iterm_session_ids, load_seen, load_worktabs, mr_key, prune_prompts, save_seen, save_worktabs,
 };
@@ -20,7 +20,7 @@ pub(crate) struct PromptMenu {
 }
 
 pub(crate) struct App {
-    pub(crate) items: Vec<Mr>,
+    pub(crate) items: Vec<MergeRequest>,
     // card order: own MRs first, then the ones under review
     pub(crate) order: Vec<usize>,
     pub(crate) mine_count: usize, // boundary between the sections in order
@@ -34,9 +34,9 @@ pub(crate) struct App {
     pub(crate) seen: serde_json::Map<String, serde_json::Value>,
     // live iTerm2 sessions (for the open/detached status)
     pub(crate) alive: HashSet<String>,
-    pub(crate) pending: Option<Receiver<Vec<Mr>>>, // background data load
-    pub(crate) spinner: usize,                     // spinner animation frame
-    pub(crate) menu: Option<PromptMenu>,           // the open prompt-mode menu
+    pub(crate) pending: Option<Receiver<Vec<MergeRequest>>>, // background data load
+    pub(crate) spinner: usize,                               // spinner animation frame
+    pub(crate) menu: Option<PromptMenu>,                     // the open prompt-mode menu
     // error message on top of everything (any key closes it)
     pub(crate) notice: Option<String>,
     // the terminal tells Shift+Enter apart (kitty protocol)
@@ -76,7 +76,7 @@ impl App {
         let me = self.me.clone();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
-            let _ = tx.send(load(&me));
+            let _ = tx.send(GitlabForge.open_merge_requests(&me));
         });
         self.pending = Some(rx);
     }
@@ -103,7 +103,7 @@ impl App {
     /// The MR is "new" (there was activity since the last look): its current
     /// updated_at is newer than the stored one; or it is missing from seen while
     /// seen is not empty (meaning it has just shown up).
-    pub(crate) fn is_new(&self, mr: &Mr) -> bool {
+    pub(crate) fn is_new(&self, mr: &MergeRequest) -> bool {
         match self.seen.get(&mr_key(mr)) {
             Some(v) => v.as_str().unwrap_or("") < mr.updated_at.as_str(),
             None => !self.seen.is_empty(),
@@ -164,7 +164,7 @@ impl App {
 
     /// Work status of an MR: None — not started; Some(true) — the tab is open;
     /// Some(false) — closed, but the session is alive (available for a resume).
-    pub(crate) fn work_status(&self, mr: &Mr) -> Option<(bool, &serde_json::Value)> {
+    pub(crate) fn work_status(&self, mr: &MergeRequest) -> Option<(bool, &serde_json::Value)> {
         self.work.get(&mr_key(mr)).map(|e| {
             let sid = e["iterm_session"].as_str().unwrap_or("");
             (!sid.is_empty() && self.alive.contains(sid), e)

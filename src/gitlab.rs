@@ -1,6 +1,13 @@
 //! Everything that talks to GitLab, through the already authenticated `glab`
 //! CLI: which instance to use, how to run a request, and how to turn the
-//! answers into `Mr` values.
+//! answers into `MergeRequest` values.
+//!
+//! This is also the only place that knows GitLab's vocabulary for status
+//! strings (`head_pipeline.status`, `detailed_merge_status`, reviewer
+//! `state`). Everything past `base_from`/`enrich` sees only the enums in
+//! `model.rs` — the `*_from_gitlab` conversion functions below are the
+//! boundary, and exactly what a GitHub adapter will need to get right on its
+//! own terms (its vocabulary is not the same).
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -8,7 +15,9 @@ use std::process::Command;
 use std::sync::OnceLock;
 
 use crate::action::compute_action;
-use crate::model::{Mr, Sev, Thread, TrainInfo};
+use crate::model::{
+    CiStatus, ForgeId, MergeRequest, Mergeable, QueuePosition, ReviewState, Sev, Thread,
+};
 
 /// Public default for when neither the environment nor the glab configuration says anything.
 const DEFAULT_GITLAB_HOST: &str = "gitlab.com";
@@ -212,7 +221,7 @@ fn username(note: &serde_json::Value) -> String {
         .to_string()
 }
 
-pub fn me_username() -> String {
+pub(crate) fn me_username() -> String {
     let name = glab_json("user", false)
         .and_then(|v| v.get("username").and_then(|s| s.as_str()).map(String::from))
         .unwrap_or_else(|| "unknown".to_string());
@@ -230,6 +239,47 @@ pub fn me_username() -> String {
     name
 }
 
+/// GitLab's `head_pipeline.status` / merge-train pipeline status → `CiStatus`.
+/// This is the one place that knows GitLab spells "in progress" four
+/// different ways; a GitHub adapter would map a completely different
+/// vocabulary (success/failure/neutral check-run conclusions) onto the same
+/// enum here.
+fn ci_status_from_gitlab(raw: &str) -> CiStatus {
+    match raw {
+        "success" => CiStatus::Success,
+        "running" | "pending" | "created" | "waiting_for_resource" | "preparing" => {
+            CiStatus::Running
+        }
+        "failed" => CiStatus::Failed,
+        "canceled" | "skipped" => CiStatus::Skipped,
+        _ => CiStatus::Unknown, // includes "-" (no pipeline) and anything unrecognized
+    }
+}
+
+/// GitLab's `detailed_merge_status` → `Mergeable`. GitLab has dozens of
+/// specific "why not yet" reasons; the dashboard only needs to know ready /
+/// conflicted / blocked-on-something-else.
+fn mergeable_from_gitlab(raw: &str) -> Mergeable {
+    match raw {
+        "mergeable" => Mergeable::Ready,
+        "conflict" => Mergeable::Conflict,
+        "-" | "" => Mergeable::Unknown,
+        _ => Mergeable::Blocked,
+    }
+}
+
+/// GitLab reviewer `state` → `ReviewState`.
+fn review_state_from_gitlab(raw: &str) -> ReviewState {
+    match raw {
+        "" => ReviewState::None,
+        "unreviewed" => ReviewState::Unreviewed,
+        "reviewed" => ReviewState::Reviewed,
+        "requested_changes" => ReviewState::RequestedChanges,
+        "approved" => ReviewState::Approved,
+        _ => ReviewState::Unknown,
+    }
+}
+
 fn project_path_from_url(url: &str) -> String {
     // https://host/group/sub/proj/-/merge_requests/123
     if let Some(idx) = url.find("/-/merge_requests") {
@@ -244,7 +294,7 @@ fn project_path_from_url(url: &str) -> String {
     String::new()
 }
 
-fn base_from(v: &serde_json::Value, mine: bool) -> Mr {
+fn base_from(v: &serde_json::Value, mine: bool) -> MergeRequest {
     let url = v["web_url"].as_str().unwrap_or("").to_string();
     let reviewers = v["reviewers"]
         .as_array()
@@ -254,26 +304,25 @@ fn base_from(v: &serde_json::Value, mine: bool) -> Mr {
                 .collect()
         })
         .unwrap_or_default();
-    Mr {
-        iid: v["iid"].as_u64().unwrap_or(0),
-        pid: v["project_id"].as_u64().unwrap_or(0),
+    MergeRequest {
+        id: ForgeId::GitLab {
+            project_id: v["project_id"].as_u64().unwrap_or(0),
+            iid: v["iid"].as_u64().unwrap_or(0),
+        },
         path: project_path_from_url(&url),
         url,
         title: v["title"].as_str().unwrap_or("").to_string(),
         author: v["author"]["username"].as_str().unwrap_or("?").to_string(),
         draft: v["draft"].as_bool().unwrap_or(false),
         conflicts: v["has_conflicts"].as_bool().unwrap_or(false),
-        merge_status: v["detailed_merge_status"]
-            .as_str()
-            .unwrap_or("-")
-            .to_string(),
-        pipeline: "-".to_string(),
+        merge_status: mergeable_from_gitlab(v["detailed_merge_status"].as_str().unwrap_or("-")),
+        pipeline: CiStatus::Unknown,
         approved_by: vec![],
         reviewers,
         unresolved: vec![],
         mine,
-        train: None,
-        my_review: String::new(),
+        queue: None,
+        my_review: ReviewState::None,
         created_at: v["created_at"].as_str().unwrap_or("").to_string(),
         updated_at: v["updated_at"].as_str().unwrap_or("").to_string(),
         action_label: String::new(),
@@ -281,9 +330,9 @@ fn base_from(v: &serde_json::Value, mine: bool) -> Mr {
     }
 }
 
-/// Active merge-train cars per project → a map (pid, iid) → TrainInfo.
+/// Active merge-train cars per project → a map (pid, iid) → QueuePosition.
 /// One request per project (not per MR).
-fn fetch_trains(pids: &HashSet<u64>) -> HashMap<(u64, u64), TrainInfo> {
+fn fetch_trains(pids: &HashSet<u64>) -> HashMap<(u64, u64), QueuePosition> {
     let mut map = HashMap::new();
     for &pid in pids {
         let Some(v) = glab_json(&format!("projects/{pid}/merge_trains?scope=active"), true) else {
@@ -298,17 +347,17 @@ fn fetch_trains(pids: &HashSet<u64>) -> HashMap<(u64, u64), TrainInfo> {
             else {
                 continue;
             };
-            let pipeline = car
-                .get("pipeline")
-                .and_then(|p| p.get("status"))
-                .and_then(|s| s.as_str())
-                .unwrap_or("-")
-                .to_string();
+            let status = ci_status_from_gitlab(
+                car.get("pipeline")
+                    .and_then(|p| p.get("status"))
+                    .and_then(|s| s.as_str())
+                    .unwrap_or("-"),
+            );
             map.insert(
                 (pid, iid),
-                TrainInfo {
+                QueuePosition {
                     position: idx + 1,
-                    pipeline,
+                    status,
                 },
             );
         }
@@ -316,20 +365,21 @@ fn fetch_trains(pids: &HashSet<u64>) -> HashMap<(u64, u64), TrainInfo> {
     map
 }
 
-fn enrich(mr: &mut Mr, me: &str) {
+fn enrich(mr: &mut MergeRequest, me: &str) {
+    let ForgeId::GitLab { project_id, iid } = mr.id;
     if let Some(d) = glab_json(
-        &format!("projects/{}/merge_requests/{}", mr.pid, mr.iid),
+        &format!("projects/{project_id}/merge_requests/{iid}"),
         false,
     ) {
-        mr.pipeline = d
-            .get("head_pipeline")
-            .and_then(|p| p.get("status"))
-            .and_then(|s| s.as_str())
-            .unwrap_or("-")
-            .to_string();
+        mr.pipeline = ci_status_from_gitlab(
+            d.get("head_pipeline")
+                .and_then(|p| p.get("status"))
+                .and_then(|s| s.as_str())
+                .unwrap_or("-"),
+        );
     }
     if let Some(a) = glab_json(
-        &format!("projects/{}/merge_requests/{}/approvals", mr.pid, mr.iid),
+        &format!("projects/{project_id}/merge_requests/{iid}/approvals"),
         false,
     ) {
         if let Some(arr) = a.get("approved_by").and_then(|x| x.as_array()) {
@@ -345,7 +395,7 @@ fn enrich(mr: &mut Mr, me: &str) {
         }
     }
     if let Some(rv) = glab_json(
-        &format!("projects/{}/merge_requests/{}/reviewers", mr.pid, mr.iid),
+        &format!("projects/{project_id}/merge_requests/{iid}/reviewers"),
         false,
     ) {
         if let Some(arr) = rv.as_array() {
@@ -356,18 +406,16 @@ fn enrich(mr: &mut Mr, me: &str) {
                     .and_then(|s| s.as_str())
                     == Some(me);
                 if is_me {
-                    mr.my_review = r
-                        .get("state")
-                        .and_then(|s| s.as_str())
-                        .unwrap_or("")
-                        .to_string();
+                    mr.my_review = review_state_from_gitlab(
+                        r.get("state").and_then(|s| s.as_str()).unwrap_or(""),
+                    );
                     break;
                 }
             }
         }
     }
     if let Some(d) = glab_json(
-        &format!("projects/{}/merge_requests/{}/discussions", mr.pid, mr.iid),
+        &format!("projects/{project_id}/merge_requests/{iid}/discussions"),
         true,
     ) {
         if let Some(arr) = d.as_array() {
@@ -396,6 +444,11 @@ fn enrich(mr: &mut Mr, me: &str) {
                     }
                     let mine = notes.iter().any(|n| username(n) == me);
                     Some(Thread {
+                        id: disc
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string(),
                         author: username(first),
                         last_author: username(notes.last().unwrap()),
                         notes: notes.len(),
@@ -412,8 +465,8 @@ fn enrich(mr: &mut Mr, me: &str) {
     }
 }
 
-pub fn load(me: &str) -> Vec<Mr> {
-    let mut base: Vec<Mr> = vec![];
+pub(crate) fn load(me: &str) -> Vec<MergeRequest> {
+    let mut base: Vec<MergeRequest> = vec![];
     let mut seen: HashSet<(u64, u64)> = HashSet::new();
     for (role, mine) in [("author", true), ("reviewer", false)] {
         let path = format!(
@@ -441,10 +494,17 @@ pub fn load(me: &str) -> Vec<Mr> {
     });
 
     // Merge trains: one request per project, then the tagging.
-    let pids: HashSet<u64> = base.iter().map(|m| m.pid).collect();
+    let pids: HashSet<u64> = base
+        .iter()
+        .map(|m| {
+            let ForgeId::GitLab { project_id, .. } = m.id;
+            project_id
+        })
+        .collect();
     let trains = fetch_trains(&pids);
     for mr in base.iter_mut() {
-        mr.train = trains.get(&(mr.pid, mr.iid)).cloned();
+        let ForgeId::GitLab { project_id, iid } = mr.id;
+        mr.queue = trains.get(&(project_id, iid)).cloned();
         compute_action(mr, me);
     }
     base
@@ -530,6 +590,83 @@ host: gitlab.example.com
         assert_eq!(
             host_from_glab_config(yaml).as_deref(),
             Some("gitlab.example.com")
+        );
+    }
+
+    // Provider-string → enum conversion: exactly where a GitHub adapter,
+    // with its own vocabulary, would get it wrong if it copied these tables
+    // verbatim instead of writing its own.
+
+    #[test]
+    fn ci_status_recognizes_every_gitlab_pipeline_state() {
+        assert_eq!(ci_status_from_gitlab("success"), CiStatus::Success);
+        for running in [
+            "running",
+            "pending",
+            "created",
+            "waiting_for_resource",
+            "preparing",
+        ] {
+            assert_eq!(
+                ci_status_from_gitlab(running),
+                CiStatus::Running,
+                "{running}"
+            );
+        }
+        assert_eq!(ci_status_from_gitlab("failed"), CiStatus::Failed);
+        for skipped in ["canceled", "skipped"] {
+            assert_eq!(
+                ci_status_from_gitlab(skipped),
+                CiStatus::Skipped,
+                "{skipped}"
+            );
+        }
+        assert_eq!(ci_status_from_gitlab("-"), CiStatus::Unknown);
+        assert_eq!(
+            ci_status_from_gitlab("some_future_status"),
+            CiStatus::Unknown
+        );
+    }
+
+    #[test]
+    fn mergeable_recognizes_gitlab_detailed_merge_status() {
+        assert_eq!(mergeable_from_gitlab("mergeable"), Mergeable::Ready);
+        assert_eq!(mergeable_from_gitlab("conflict"), Mergeable::Conflict);
+        assert_eq!(mergeable_from_gitlab("-"), Mergeable::Unknown);
+        assert_eq!(mergeable_from_gitlab(""), Mergeable::Unknown);
+        // Any of GitLab's many other "not yet" reasons collapse to Blocked.
+        for blocked in [
+            "ci_still_running",
+            "discussions_not_resolved",
+            "need_rebase",
+            "draft_status",
+            "checking",
+            "unchecked",
+        ] {
+            assert_eq!(
+                mergeable_from_gitlab(blocked),
+                Mergeable::Blocked,
+                "{blocked}"
+            );
+        }
+    }
+
+    #[test]
+    fn review_state_recognizes_gitlab_reviewer_states() {
+        assert_eq!(review_state_from_gitlab(""), ReviewState::None);
+        assert_eq!(
+            review_state_from_gitlab("unreviewed"),
+            ReviewState::Unreviewed
+        );
+        assert_eq!(review_state_from_gitlab("reviewed"), ReviewState::Reviewed);
+        assert_eq!(
+            review_state_from_gitlab("requested_changes"),
+            ReviewState::RequestedChanges
+        );
+        assert_eq!(review_state_from_gitlab("approved"), ReviewState::Approved);
+        assert_eq!(
+            review_state_from_gitlab("something_new"),
+            ReviewState::Unknown
         );
     }
 }

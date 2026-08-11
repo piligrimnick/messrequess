@@ -32,7 +32,7 @@ pub use builtin::dump_default_prompts;
 use builtin::{builtin_template, prompt_templates_dir};
 use engine::render_template;
 
-use crate::model::{Mr, Thread};
+use crate::model::{MergeRequest, Thread};
 use crate::time::rel_age;
 
 /// The prompt mode used when opening Claude (picked in the Shift+Enter menu).
@@ -95,16 +95,16 @@ impl Templates {
 
 /// Placeholder values for a single MR. `threads` is the already rendered list
 /// of the threads that belong to the selected mode.
-fn prompt_vars(mr: &Mr, threads: &[&Thread]) -> HashMap<&'static str, String> {
+fn prompt_vars(mr: &MergeRequest, threads: &[&Thread]) -> HashMap<&'static str, String> {
     let mut v: HashMap<&'static str, String> = HashMap::new();
     v.insert("path", mr.path.clone());
-    v.insert("iid", mr.iid.to_string());
+    v.insert("iid", mr.number().to_string());
     v.insert("title", mr.title.clone());
     v.insert("url", mr.url.clone());
     v.insert("author", mr.author.clone());
     v.insert("state", if mr.draft { "Draft" } else { "open" }.to_string());
-    v.insert("pipeline", mr.pipeline.clone());
-    v.insert("merge_status", mr.merge_status.clone());
+    v.insert("pipeline", mr.pipeline.to_string());
+    v.insert("merge_status", mr.merge_status.to_string());
     v.insert(
         "conflicts",
         if mr.conflicts {
@@ -152,11 +152,11 @@ fn threads_block<'a>(threads: impl Iterator<Item = &'a Thread>) -> String {
 /// The formatted (multi-line) context for claude in the selected mode.
 /// Delivered as a file (`"$(cat FILE)"`), so newlines survive.
 /// Blank returns an empty string — claude opens with no prompt.
-pub fn build_prompt_line(mr: &Mr, mode: PromptMode) -> String {
+pub fn build_prompt_line(mr: &MergeRequest, mode: PromptMode) -> String {
     build_prompt(mr, mode, &Templates::load())
 }
 
-fn build_prompt(mr: &Mr, mode: PromptMode, tpl: &Templates) -> String {
+fn build_prompt(mr: &MergeRequest, mode: PromptMode, tpl: &Templates) -> String {
     if mode == PromptMode::Blank {
         return String::new();
     }
@@ -218,10 +218,11 @@ fn sanitize_prompt(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Sev;
+    use crate::model::{CiStatus, ForgeId, Mergeable, ReviewState, Sev};
 
     fn thread(author: &str, body: &str, mine: bool) -> Thread {
         Thread {
+            id: "discussion-1".into(),
             author: author.to_string(),
             last_author: author.to_string(),
             notes: 1,
@@ -230,24 +231,26 @@ mod tests {
         }
     }
 
-    fn mr(mine: bool, unresolved: Vec<Thread>) -> Mr {
-        Mr {
-            iid: 42,
-            pid: 7,
+    fn mr(mine: bool, unresolved: Vec<Thread>) -> MergeRequest {
+        MergeRequest {
+            id: ForgeId::GitLab {
+                project_id: 7,
+                iid: 42,
+            },
             path: "group/project".into(),
             url: "https://gitlab.example.com/group/project/-/merge_requests/42".into(),
             title: "Add widget".into(),
             author: "alice".into(),
             draft: false,
             conflicts: false,
-            merge_status: "can_be_merged".into(),
-            pipeline: "success".into(),
+            merge_status: Mergeable::Ready,
+            pipeline: CiStatus::Success,
             approved_by: vec![],
             reviewers: vec!["bob".into()],
             unresolved,
             mine,
-            train: None,
-            my_review: String::new(),
+            queue: None,
+            my_review: ReviewState::None,
             created_at: "2026-01-01T00:00:00.000Z".into(),
             updated_at: "2026-01-02T00:00:00.000Z".into(),
             action_label: String::new(),

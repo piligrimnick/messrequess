@@ -13,8 +13,9 @@
 //! ```
 //!
 //! A key in `projects` is the project path in GitLab, exactly the one shown on
-//! the card (`Mr.path`, see `project_path_from_url`). `default_path` is the
-//! fallback for every other project; with a monorepo it is enough on its own.
+//! the card (`MergeRequest.path`, see `project_path_from_url`). `default_path`
+//! is the fallback for every other project; with a monorepo it is enough on
+//! its own.
 //!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
@@ -24,7 +25,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::error::WorkError;
-use crate::model::Mr;
+use crate::model::MergeRequest;
 
 #[derive(Default)]
 struct Config {
@@ -107,7 +108,7 @@ impl Config {
 /// The directory in which to open Claude for this MR. `Err` carries enough to
 /// build the ready-made-JSON popup text the user needs: failing to open a
 /// session silently is worse than saying why.
-pub(crate) fn work_dir_for_mr(mr: &Mr) -> Result<String, WorkError> {
+pub(crate) fn work_dir_for_mr(mr: &MergeRequest) -> Result<String, WorkError> {
     let cfg = Config::load();
     let file = config_path();
     let Some(dir) = cfg.work_dir_for(&mr.path, &home_dir()) else {
