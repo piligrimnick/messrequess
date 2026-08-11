@@ -206,8 +206,7 @@ pub(crate) fn start_work(
 }
 
 /// Resume an existing claude session by its id in a new tab, with a prompt
-/// that says what changed on the MR since `last_seen` (the `updated_at`
-/// recorded in `seen.json` the last time it was looked at) — see
+/// that says what changed on the MR since `--notify`'s last snapshot — see
 /// `build_resume_prompt_line`. A session picked up days later should not
 /// start blind.
 ///
@@ -218,13 +217,12 @@ pub(crate) fn start_work(
 pub(crate) fn resume_work(
     mr: &MergeRequest,
     entry: &serde_json::Value,
-    last_seen: Option<&str>,
 ) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = entry["claude_session"].as_str().unwrap_or("").to_string();
     let default = format!("MR !{}", mr.number());
     let name = entry["name"].as_str().unwrap_or(&default).to_string();
-    let prompt = build_resume_prompt_line(mr, last_seen);
+    let prompt = build_resume_prompt_line(mr);
 
     let args = if prompt.is_empty() {
         format!("--resume {}", shq(&sid))

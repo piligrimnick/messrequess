@@ -29,8 +29,9 @@
 //!   threads you took part in. Write conditions against `threads`: `count` is
 //!   "0" when there are none, which counts as non-empty.
 //!   The `resume` template additionally gets `changes` (a rendered bullet
-//!   list of what moved since the session was last seen — empty if nothing
-//!   did or nothing is known) and `elapsed` (how long ago that was).
+//!   list of what moved since `--notify`'s last snapshot — empty if nothing
+//!   did or nothing is known yet) and `elapsed` (how long ago that snapshot
+//!   was taken — see `notify::state_age`).
 
 mod builtin;
 mod engine;
@@ -43,7 +44,7 @@ use builtin::{builtin_template, prompt_templates_dir};
 use engine::render_template;
 
 use crate::model::{MergeRequest, Thread};
-use crate::notify::{changes_since, last_fingerprint};
+use crate::notify::{changes_since, last_fingerprint, state_age};
 use crate::time::rel_age;
 
 /// The prompt mode used when opening Claude (picked in the Shift+Enter menu).
@@ -208,24 +209,29 @@ fn build_prompt(mr: &MergeRequest, mode: PromptMode, tpl: &Templates) -> String 
 
 /// The prompt used to reopen a session (`resume_work`): what moved on the MR
 /// since it was last seen, not a repeat of the full context — the session
-/// already has that from when it started. `last_seen` is the `updated_at`
-/// recorded in `seen.json` the last time this MR was looked at (`None` if it
-/// was never acked, which should not normally happen for a resume).
+/// already has that from when it started.
 ///
-/// The delta itself comes from `--notify`'s state snapshot
-/// (`notify::last_fingerprint` / `notify::changes_since`) — reused rather
-/// than recomputed, since `--notify` already tracks exactly this: approvals,
-/// pipeline, and whose turn it is, one poll at a time. The disk read lives
-/// only here; `build_resume_prompt` below stays pure and is what the tests
-/// exercise, the same split `notify::notify_mode` / `notify::compute` uses.
-pub fn build_resume_prompt_line(mr: &MergeRequest, last_seen: Option<&str>) -> String {
+/// The delta comes from `--notify`'s state snapshot (`notify::last_fingerprint`
+/// / `notify::changes_since`) — reused rather than recomputed, since
+/// `--notify` already tracks exactly this: approvals, pipeline, and whose
+/// turn it is, one poll at a time. `elapsed` is how long ago that snapshot
+/// was written (`notify::state_age`), not how long ago *you* looked —
+/// `seen.json`'s last-acked `updated_at` looks like the obvious source but
+/// dates the MR's own last change, not your visit, which would silently
+/// mismatch the delta it is displayed next to (see the note on `state_age`).
+///
+/// The disk reads live only here; `build_resume_prompt` below stays pure and
+/// is what the tests exercise, the same split `notify::notify_mode` /
+/// `notify::compute` uses.
+pub(crate) fn build_resume_prompt_line(mr: &MergeRequest) -> String {
     let prev = last_fingerprint(&mr.storage_key());
-    build_resume_prompt(mr, last_seen, prev.as_ref(), &Templates::load())
+    let elapsed = state_age();
+    build_resume_prompt(mr, elapsed.as_deref(), prev.as_ref(), &Templates::load())
 }
 
 fn build_resume_prompt(
     mr: &MergeRequest,
-    last_seen: Option<&str>,
+    elapsed: Option<&str>,
     prev: Option<&serde_json::Value>,
     tpl: &Templates,
 ) -> String {
@@ -234,12 +240,7 @@ fn build_resume_prompt(
     let threads = relevant_threads(mr, mr.mine);
     let mut vars = prompt_vars(mr, &threads);
     vars.insert("changes", changes_block(&deltas));
-    vars.insert(
-        "elapsed",
-        last_seen
-            .map(rel_age)
-            .unwrap_or_else(|| "a while".to_string()),
-    );
+    vars.insert("elapsed", elapsed.unwrap_or("a while").to_string());
 
     let mut s = String::new();
     s += render_template(&tpl.get("header"), &vars).trim_end();
@@ -478,13 +479,9 @@ mod tests {
     }
 
     #[test]
-    fn resume_prompt_uses_last_seen_for_elapsed() {
-        let p = build_resume_prompt(
-            &mr(true, vec![]),
-            Some("2026-01-02T00:00:00.000Z"),
-            None,
-            &Templates::builtin(),
-        );
+    fn resume_prompt_uses_the_supplied_elapsed_verbatim() {
+        let p = build_resume_prompt(&mr(true, vec![]), Some("5m"), None, &Templates::builtin());
+        assert!(p.contains("5m"), "{p}");
         assert!(!p.contains("a while"), "{p}");
     }
 
@@ -499,7 +496,7 @@ mod tests {
         let mut m = mr(true, vec![]);
         m.pipeline = CiStatus::Failed;
         let p = build_resume_prompt(&m, None, Some(&prev), &Templates::builtin());
-        assert!(p.contains("Since you last looked"), "{p}");
+        assert!(p.contains("Since the last check"), "{p}");
         assert!(p.contains("running") && p.contains("failed"), "{p}");
         assert!(!p.contains("No tracked changes"), "{p}");
     }

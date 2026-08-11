@@ -36,7 +36,13 @@ pub(crate) fn rel_age(iso: &str) -> String {
     let Some(t) = parse_iso8601(iso) else {
         return "-".to_string();
     };
-    let secs = (now_unix() - t).max(0);
+    rel_age_secs((now_unix() - t).max(0))
+}
+
+/// Same bucketing as `rel_age`, from a raw second count instead of an
+/// ISO8601 string — for ages measured off something other than a GitLab
+/// timestamp (e.g. a file's mtime).
+pub(crate) fn rel_age_secs(secs: i64) -> String {
     if secs < 60 {
         "just now".to_string()
     } else if secs < 3600 {
@@ -55,5 +61,38 @@ pub(crate) fn age_days(iso: &str) -> i64 {
     match parse_iso8601(iso) {
         Some(t) => (now_unix() - t).max(0) / 86400,
         None => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rel_age_secs_buckets_by_magnitude() {
+        assert_eq!(rel_age_secs(0), "just now");
+        assert_eq!(rel_age_secs(59), "just now");
+        assert_eq!(rel_age_secs(60), "1m");
+        assert_eq!(rel_age_secs(3599), "59m");
+        assert_eq!(rel_age_secs(3600), "1h");
+        assert_eq!(rel_age_secs(86399), "23h");
+        assert_eq!(rel_age_secs(86400), "1d");
+        assert_eq!(rel_age_secs(7 * 86400 - 1), "6d");
+        assert_eq!(rel_age_secs(7 * 86400), "1w");
+    }
+
+    #[test]
+    fn rel_age_and_rel_age_secs_agree_on_a_known_timestamp() {
+        // rel_age(iso) is rel_age_secs(now - t) — pin one data point without
+        // depending on wall-clock time in the test itself: an ISO8601
+        // timestamp far enough in the past that it always lands in "…w".
+        let out = rel_age("2000-01-01T00:00:00.000Z");
+        assert!(out.ends_with('w'), "{out}");
+    }
+
+    #[test]
+    fn rel_age_falls_back_to_dash_on_unparseable_input() {
+        assert_eq!(rel_age("not a timestamp"), "-");
+        assert_eq!(rel_age(""), "-");
     }
 }

@@ -102,7 +102,7 @@ The prompts sent to Claude are templates, not hard-coded strings — Markdown fi
 
 The syntax is `{variable}` substitution plus a non-nesting `[[if variable]]…[[else]]…[[end]]` block, where the condition is "the variable is non-empty". Two smaller pieces are rendered in code and cannot be overridden from a template: the per-thread line and the "conflicts" marker in the header.
 
-`resume` is what gets sent when you reopen a session that is no longer running (see [Keys](#keys)) — instead of repeating the MR from scratch, it reports what moved since you last looked at it (new approvals, the pipeline changing, new unresolved threads, the turn switching to you), using the same fingerprint `--notify` already tracks. Its two extra placeholders are `changes` (the rendered delta, empty if nothing moved or nothing is known yet) and `elapsed` (how long ago you last looked).
+`resume` is what gets sent when you reopen a session that is no longer running (see [Keys](#keys)) — instead of repeating the MR from scratch, it reports what moved (new approvals, the pipeline changing, new unresolved threads, the turn switching to you), using the same fingerprint `--notify` already tracks in `state.json`. Its two extra placeholders are `changes` (the rendered delta, empty if nothing moved or nothing is known yet — e.g. `--notify` has never run) and `elapsed` (how long ago that snapshot was taken).
 
 If `~/.config/mrdash/prompts/` still has `.txt` files from before this format changed (messreq-6x9), they keep working: a name is looked up as `.md` first, and only falls back to `.txt` if no `.md` file exists for it. Nothing is migrated or overwritten automatically — `--dump-prompts` will not write a `<name>.md` default next to a `<name>.txt` you already customized, since that would silently stop your customization from being read.
 
@@ -111,7 +111,7 @@ If `~/.config/mrdash/prompts/` still has `.txt` files from before this format ch
 | Key | Action |
 |---|---|
 | `↑` `↓` / `k` `j` | Move between cards |
-| `Enter` | Claude session for the selected MR: open a new tab, focus the existing one, or resume a closed one (with a prompt reporting what changed since you last looked) |
+| `Enter` | Claude session for the selected MR: open a new tab, focus the existing one, or resume a closed one (with a prompt reporting what changed since the last poll) |
 | `Shift+Enter` or `p` | Prompt-mode menu (see below) |
 | `o` | Open the MR in the browser (also marks it seen) |
 | `m` | Mark everything as seen |
