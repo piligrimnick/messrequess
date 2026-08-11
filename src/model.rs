@@ -27,6 +27,33 @@ pub(crate) enum ForgeId {
     GitLab { project_id: u64, iid: u64 },
 }
 
+impl ForgeId {
+    /// The number shown on the card and used by `--prompt <n>`: GitLab's
+    /// iid, or what would be a GitHub PR's number.
+    pub(crate) fn number(&self) -> u64 {
+        let ForgeId::GitLab { iid, .. } = self;
+        *iid
+    }
+
+    /// The on-disk key used by worktabs.json / seen.json / state.json:
+    /// `"<project_id>!<iid>"` for GitLab. This is a contract with files that
+    /// already exist on disk, not just an internal cache key — changing the
+    /// format orphans every existing worktabs/seen binding on upgrade with
+    /// no error and no test failure: sessions silently stop resuming, and
+    /// every MR relights its 🆕 badge. Do not "clean up" this format without
+    /// a migration.
+    ///
+    /// The `let ForgeId::GitLab { .. } = self` pattern below is irrefutable
+    /// today, on purpose: the moment a `GitHub` variant is added, this stops
+    /// compiling, and whoever adds it has to decide that provider's key
+    /// format explicitly (`"gh:<owner>/<repo>#<number>"` or similar) instead
+    /// of it falling through to something that happens to typecheck.
+    pub(crate) fn storage_key(&self) -> String {
+        let ForgeId::GitLab { project_id, iid } = self;
+        format!("{project_id}!{iid}")
+    }
+}
+
 /// CI status, normalized across providers. GitLab's `head_pipeline.status`
 /// and GitHub's check-run vocabulary name the same ideas differently — if
 /// `action.rs` or `ui/` compared against a raw provider string directly, the
@@ -180,27 +207,47 @@ pub struct MergeRequest {
 }
 
 impl MergeRequest {
-    /// The number shown on the card and used by `--prompt <n>`: GitLab's
-    /// iid, or what would be a GitHub PR's number. A method rather than a
-    /// public field, so nothing outside this module needs to know which
-    /// provider shape backs it.
+    /// See `ForgeId::number`. A method rather than a public field, so
+    /// nothing outside this module needs to know which provider shape
+    /// backs it.
     pub fn number(&self) -> u64 {
-        let ForgeId::GitLab { iid, .. } = self.id;
-        iid
+        self.id.number()
     }
 
-    /// The on-disk key used by worktabs.json / seen.json / state.json:
-    /// `"<project_id>!<iid>"` for GitLab. Keep this format stable across
-    /// releases — changing it silently orphans every existing binding.
+    /// See `ForgeId::storage_key`.
     pub(crate) fn storage_key(&self) -> String {
-        let ForgeId::GitLab { project_id, iid } = self.id;
-        format!("{project_id}!{iid}")
+        self.id.storage_key()
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // `storage_key()` is a contract with files already on disk
+    // (worktabs.json / seen.json / state.json), not just an internal cache
+    // key — see the doc comment on `ForgeId::storage_key`. Pin the exact
+    // string, with realistic-looking values (this is the shape a real
+    // project id / MR iid pair actually takes on disk today), so a change to
+    // the format fails a test instead of silently orphaning every user's
+    // existing session bindings on their next upgrade.
+    #[test]
+    fn gitlab_storage_key_is_project_id_bang_iid() {
+        let id = ForgeId::GitLab {
+            project_id: 376,
+            iid: 58817,
+        };
+        assert_eq!(id.storage_key(), "376!58817");
+    }
+
+    #[test]
+    fn gitlab_number_is_the_iid() {
+        let id = ForgeId::GitLab {
+            project_id: 376,
+            iid: 58817,
+        };
+        assert_eq!(id.number(), 58817);
+    }
 
     // `--plain`'s columns are built with `format!("...{:<8}...", mr.pipeline)`
     // (see `ui::print_plain`). A `Display` impl that writes via `write_str`
