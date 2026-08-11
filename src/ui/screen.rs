@@ -20,7 +20,7 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
         .border_style(Style::default().fg(Color::Rgb(95, 95, 130)))
         .padding(Padding::new(3, 3, 1, 1))
         .title(Span::styled(
-            " 🧭 mrdash ",
+            " 🧭 messreq ",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
