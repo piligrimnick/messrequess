@@ -17,6 +17,7 @@
 
 pub(crate) mod action;
 pub(crate) mod config;
+pub(crate) mod error;
 pub mod gitlab;
 pub mod model;
 pub mod notify;
