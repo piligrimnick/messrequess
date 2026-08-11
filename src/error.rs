@@ -16,7 +16,7 @@ use std::fmt;
 use std::path::PathBuf;
 
 #[derive(Debug)]
-pub enum WorkError {
+pub(crate) enum WorkError {
     /// No entry for this project under `projects`, and no `default_path` to
     /// fall back to — `work_dir_for_mr` has nowhere to look.
     NoWorkDir {
