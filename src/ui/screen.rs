@@ -9,7 +9,7 @@ use ratatui::Frame;
 
 use super::app::App;
 use super::card::render_card;
-use super::popup::{render_menu, render_notice};
+use super::popup::{render_confirm, render_menu, render_notice};
 use super::{REFRESH_SECS, SPIN};
 
 pub(crate) fn ui(f: &mut Frame, app: &mut App) {
@@ -219,5 +219,6 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(Paragraph::new(footer), chunks[4]);
 
     render_menu(f, app);
+    render_confirm(f, app);
     render_notice(f, app);
 }

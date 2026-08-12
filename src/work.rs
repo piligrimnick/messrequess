@@ -209,20 +209,33 @@ pub(crate) fn start_work(
 /// that says what changed on the MR since `--notify`'s last snapshot — see
 /// `build_resume_prompt_line`. A session picked up days later should not
 /// start blind.
+pub(crate) fn resume_work(
+    mr: &MergeRequest,
+    entry: &serde_json::Value,
+) -> Result<serde_json::Value, WorkError> {
+    resume_work_with_prompt(mr, entry, build_resume_prompt_line(mr))
+}
+
+/// Resume an existing claude session with an explicit prompt instead of the
+/// delta computed from the last `--notify` snapshot — an empty string sends
+/// nothing. `resume_work` is the common case (the "what changed" delta); the
+/// prompt-mode menu uses this directly for "resume with this mode's prompt"
+/// and "resume, no prompt", so a plain Enter and a menu pick never disagree
+/// about what "resume" means, only about which prompt (if any) goes with it.
 ///
 /// `claude [options] [command] [prompt]` takes the prompt as a positional
 /// argument regardless of `--resume`/`-r` — confirmed against the CLI itself
 /// (not documented either way), the same way `start_work` already passes a
 /// prompt positionally for a brand new session.
-pub(crate) fn resume_work(
+pub(crate) fn resume_work_with_prompt(
     mr: &MergeRequest,
     entry: &serde_json::Value,
+    prompt: String,
 ) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = entry["claude_session"].as_str().unwrap_or("").to_string();
     let default = format!("MR !{}", mr.number());
     let name = entry["name"].as_str().unwrap_or(&default).to_string();
-    let prompt = build_resume_prompt_line(mr);
 
     let args = if prompt.is_empty() {
         format!("--resume {}", shq(&sid))
@@ -351,6 +364,43 @@ pub(crate) fn focus_iterm(session_id: &str) {
         .output();
 }
 
+/// The single line sent into a live session so the agent already running
+/// there knows a new prompt is waiting and where to find it. Kept pure and
+/// separate from the `it2` call so the wording is covered by a unit test
+/// without touching a real session.
+fn live_session_line(file: &std::path::Path) -> String {
+    format!("New task queued — read and follow {}", file.display())
+}
+
+/// Deliver a prompt into a session whose tab is already open, instead of
+/// launching or resuming anything. The prompt goes to the same per-session
+/// file `start_work`/`resume_work_with_prompt` write (`<claude_session>.txt`
+/// under `prompts_dir()`), and a single short line naming that file is sent
+/// into the live iTerm2 session so the agent already running there reads it
+/// and acts on it — see `messreq-e5t.3`.
+///
+/// Deliberately does not retry or poll for confirmation, unlike
+/// `open_tab_capture`'s sentinel handshake: that handshake re-presses Enter
+/// into a *fresh* session it just created, where nothing else is happening.
+/// Here there is a live human (or agent) session in the way — a missed
+/// submit just leaves the file on disk for them to notice or press Enter
+/// themselves, while a retried Enter could submit whatever they were in the
+/// middle of typing.
+pub(crate) fn deliver_to_live_session(claude_session: &str, iterm_session: &str, prompt: &str) {
+    let file = prompts_dir().join(format!("{claude_session}.txt"));
+    let _ = std::fs::write(&file, prompt);
+    let line = live_session_line(&file);
+    // Two separate sends, mirroring the type-then-submit idiom
+    // `open_tab_capture` relies on elsewhere in this file: the text, then a
+    // distinct Enter keystroke. Sent once each — no retry, see above.
+    let _ = Command::new("it2")
+        .args(["session", "send", "-s", iterm_session, &line])
+        .output();
+    let _ = Command::new("it2")
+        .args(["session", "send", "-s", iterm_session, "\n"])
+        .output();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -384,5 +434,17 @@ mod tests {
             wrapped,
             r#"sh -c 'cd '\''/w'\'' && exec claude --resume '\''x'\'''"#
         );
+    }
+
+    #[test]
+    fn live_session_line_names_the_file_and_says_what_to_do_with_it() {
+        let line = live_session_line(std::path::Path::new(
+            "/Users/me/.local/state/messreq/prompts/abc123.txt",
+        ));
+        assert!(line.contains("/Users/me/.local/state/messreq/prompts/abc123.txt"));
+        assert!(line.to_lowercase().contains("read"));
+        // One line only — it goes through `it2 session send`, where a long
+        // typed line is exactly what loses its Enter (see `claude_script`).
+        assert!(!line.contains('\n'));
     }
 }
