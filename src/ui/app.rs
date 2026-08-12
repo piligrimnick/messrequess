@@ -110,6 +110,11 @@ impl App {
     pub(crate) fn poll_pending(&mut self) {
         if let Some(rx) = &self.pending {
             if let Ok(items) = rx.try_recv() {
+                // Capture the selection by storage key before `items` is
+                // replaced — `rebuild_order_from` needs the key from the OLD
+                // list, since by the time it runs `self.items` is already
+                // the new one.
+                let selected_key = self.selected_key();
                 self.items = items;
                 self.last_load = Instant::now();
                 self.alive = iterm_session_ids();
@@ -118,7 +123,7 @@ impl App {
                 if self.seen.is_empty() && !self.items.is_empty() {
                     self.mark_all_seen();
                 }
-                self.rebuild_order();
+                self.rebuild_order_from(selected_key);
                 self.prune_state();
                 self.pending = None;
             }
@@ -196,7 +201,39 @@ impl App {
         })
     }
 
+    /// Rebuild `order`/`mine_count` from `items`, keeping the selection on
+    /// the same MR. `items` itself is unchanged here (only visibility/order
+    /// can move), so the key can be read from the current selection.
     fn rebuild_order(&mut self) {
+        let selected_key = self.selected_key();
+        self.rebuild_order_from(selected_key);
+    }
+
+    /// Storage key of the currently selected MR, if any — used to re-locate
+    /// the selection after `order` is rebuilt.
+    fn selected_key(&self) -> Option<String> {
+        self.selected_item()
+            .and_then(|i| self.items.get(i))
+            .map(mr_key)
+    }
+
+    /// Same as `rebuild_order`, but takes the previously-selected MR's
+    /// storage key explicitly instead of deriving it from the current
+    /// `sel`/`order`. `App::sel` is an index into `order`, not a reference to
+    /// an MR, so a plain re-run of this function after `order` (or `items`)
+    /// changes underneath it can silently land on a different MR — see
+    /// `find_item`'s doc comment for the same class of bug in the prompt
+    /// menu. `poll_pending` replaces `items` wholesale before this runs, so
+    /// it must capture the key from the *old* items first and pass it in
+    /// here; `rebuild_order`'s own lookup would compute the key against the
+    /// *new* items and either miss or coincidentally match the wrong MR.
+    ///
+    /// The selection follows the key when the MR is still visible, wherever
+    /// it moved to. When the MR is genuinely gone (merged/closed and pruned,
+    /// or hidden by the drafts filter), this falls back to the previous
+    /// clamping behavior: keep `sel` if it is still in bounds, otherwise
+    /// clamp to the last item (or 0 once the list is empty).
+    fn rebuild_order_from(&mut self, selected_key: Option<String>) {
         let visible = |i: usize| self.show_drafts || !self.items[i].draft;
         let mine: Vec<usize> = (0..self.items.len())
             .filter(|&i| self.items[i].mine && visible(i))
@@ -206,9 +243,17 @@ impl App {
             .collect();
         self.mine_count = mine.len();
         self.order = mine.into_iter().chain(rev).collect();
-        if self.sel >= self.order.len() {
-            self.sel = self.order.len().saturating_sub(1);
-        }
+
+        let restored = selected_key.and_then(|key| {
+            self.order
+                .iter()
+                .position(|&idx| mr_key(&self.items[idx]) == key)
+        });
+        self.sel = match restored {
+            Some(pos) => pos,
+            None if self.sel >= self.order.len() => self.order.len().saturating_sub(1),
+            None => self.sel,
+        };
     }
 
     pub(crate) fn toggle_drafts(&mut self) {
@@ -279,6 +324,12 @@ mod tests {
         }
     }
 
+    fn mr_draft(project_id: u64, iid: u64) -> MergeRequest {
+        let mut m = mr(project_id, iid);
+        m.draft = true;
+        m
+    }
+
     fn app_with(items: Vec<MergeRequest>) -> App {
         App {
             items,
@@ -318,5 +369,91 @@ mod tests {
 
         let empty = app_with(vec![]);
         assert_eq!(empty.find_item("1!7"), None);
+    }
+
+    // messreq-9b5.3: the selected MR must stay anchored by storage key across
+    // a `rebuild_order` — a background reload (or 'd') must not silently move
+    // the highlight onto a different MR just because it changed position.
+
+    #[test]
+    fn rebuild_order_from_follows_the_selected_mr_when_it_moves() {
+        let mut app = app_with(vec![mr(1, 7), mr(1, 8), mr(1, 9)]);
+        app.rebuild_order();
+        app.sel = 2; // mr 9, currently last
+        assert_eq!(app.selected_item(), Some(2));
+
+        // Simulate poll_pending: capture the key, then a reload comes back
+        // with mr 9 reordered to the front.
+        let selected_key = app.selected_key();
+        app.items = vec![mr(1, 9), mr(1, 7), mr(1, 8)];
+        app.rebuild_order_from(selected_key);
+
+        // The highlight follows mr 9 to its new position, not row 2.
+        assert_eq!(app.selected_item(), Some(0));
+    }
+
+    #[test]
+    fn rebuild_order_from_clamps_when_the_selected_mr_is_gone() {
+        let mut app = app_with(vec![mr(1, 7), mr(1, 8), mr(1, 9)]);
+        app.rebuild_order();
+        app.sel = 2; // mr 9
+
+        let selected_key = app.selected_key();
+        // mr 9 merged and dropped out of the response.
+        app.items = vec![mr(1, 7), mr(1, 8)];
+        app.rebuild_order_from(selected_key);
+
+        // Falls back to the previous clamping behavior: sel (2) is out of
+        // the new bounds (len 2), so it lands on the last item — a
+        // deterministic fallback, not a random neighbor.
+        assert_eq!(app.order.len(), 2);
+        assert_eq!(app.sel, 1);
+    }
+
+    #[test]
+    fn rebuild_order_from_handles_an_empty_list_without_panicking() {
+        let mut app = app_with(vec![mr(1, 7), mr(1, 8)]);
+        app.rebuild_order();
+        app.sel = 1;
+
+        let selected_key = app.selected_key();
+        app.items = vec![];
+        app.rebuild_order_from(selected_key);
+
+        assert_eq!(app.order, Vec::<usize>::new());
+        assert_eq!(app.sel, 0);
+        assert_eq!(app.selected_item(), None);
+    }
+
+    #[test]
+    fn toggle_drafts_keeps_the_selection_on_the_same_mr_when_it_stays_visible() {
+        let mut app = app_with(vec![mr(1, 7), mr_draft(1, 8), mr(1, 9)]);
+        app.rebuild_order(); // drafts hidden: order = [0, 2] (mr 7, mr 9)
+        app.sel = 1; // mr 9
+        assert_eq!(app.selected_item(), Some(2));
+
+        app.toggle_drafts(); // drafts now shown: order = [0, 1, 2]
+
+        // mr 9 is still selected — it just slid from row 1 to row 2 once the
+        // draft (mr 8) appeared above it.
+        assert_eq!(app.selected_item(), Some(2));
+    }
+
+    #[test]
+    fn toggle_drafts_degrades_sanely_when_the_selected_mr_is_the_one_hidden() {
+        let mut app = app_with(vec![mr(1, 7), mr_draft(1, 8), mr(1, 9)]);
+        app.show_drafts = true;
+        app.rebuild_order(); // order = [0, 1, 2]
+        app.sel = 1; // the draft, mr 8
+        assert_eq!(app.selected_item(), Some(1));
+
+        app.toggle_drafts(); // drafts hidden: mr 8 drops out of order
+
+        // mr 8 is no longer visible, so the key lookup can't find it; falls
+        // back to the clamp (sel unchanged, still in bounds of the new
+        // order) rather than panicking or jumping to an unrelated MR.
+        assert_eq!(app.order, vec![0, 2]);
+        assert_eq!(app.sel, 1);
+        assert_eq!(app.selected_item(), Some(2)); // mr 9
     }
 }
