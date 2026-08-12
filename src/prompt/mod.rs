@@ -48,7 +48,7 @@ use crate::notify::{changes_since, last_fingerprint, state_age};
 use crate::time::rel_age;
 
 /// The prompt mode used when opening Claude (picked in the Shift+Enter menu).
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum PromptMode {
     Surface,   // surface review + narrow spots (+ my threads) — the default on Enter
     MyThreads, // only my unresolved threads
@@ -57,15 +57,11 @@ pub enum PromptMode {
 }
 
 impl PromptMode {
-    pub(crate) const ALL: [PromptMode; 4] = [
-        PromptMode::Surface,
-        PromptMode::MyThreads,
-        PromptMode::Deep,
-        PromptMode::Blank,
-    ];
-
     /// Label for the menu. The default mode depends on whether the MR is mine
-    /// (drive it to approved) or someone else's (review it).
+    /// (drive it to approved) or someone else's (review it). `Blank` has no
+    /// menu entry of its own any more (see `ui::menu::MenuItem`) but the
+    /// label stays defined, since `menu_for`/`decide` still route through
+    /// `PromptMode::Blank` for "start a new session, no prompt".
     pub(crate) fn label_for(self, mine: bool) -> &'static str {
         match self {
             PromptMode::Surface if mine => "Drive to approved",

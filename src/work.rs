@@ -209,20 +209,33 @@ pub(crate) fn start_work(
 /// that says what changed on the MR since `--notify`'s last snapshot — see
 /// `build_resume_prompt_line`. A session picked up days later should not
 /// start blind.
+pub(crate) fn resume_work(
+    mr: &MergeRequest,
+    entry: &serde_json::Value,
+) -> Result<serde_json::Value, WorkError> {
+    resume_work_with_prompt(mr, entry, build_resume_prompt_line(mr))
+}
+
+/// Resume an existing claude session with an explicit prompt instead of the
+/// delta computed from the last `--notify` snapshot — an empty string sends
+/// nothing. `resume_work` is the common case (the "what changed" delta); the
+/// prompt-mode menu uses this directly for "resume with this mode's prompt"
+/// and "resume, no prompt", so a plain Enter and a menu pick never disagree
+/// about what "resume" means, only about which prompt (if any) goes with it.
 ///
 /// `claude [options] [command] [prompt]` takes the prompt as a positional
 /// argument regardless of `--resume`/`-r` — confirmed against the CLI itself
 /// (not documented either way), the same way `start_work` already passes a
 /// prompt positionally for a brand new session.
-pub(crate) fn resume_work(
+pub(crate) fn resume_work_with_prompt(
     mr: &MergeRequest,
     entry: &serde_json::Value,
+    prompt: String,
 ) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = entry["claude_session"].as_str().unwrap_or("").to_string();
     let default = format!("MR !{}", mr.number());
     let name = entry["name"].as_str().unwrap_or(&default).to_string();
-    let prompt = build_resume_prompt_line(mr);
 
     let args = if prompt.is_empty() {
         format!("--resume {}", shq(&sid))

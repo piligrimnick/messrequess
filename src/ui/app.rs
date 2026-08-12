@@ -7,16 +7,38 @@ use std::time::Instant;
 
 use serde_json::json;
 
+use super::menu::MenuItem;
 use crate::forge::{Forge, GitlabForge};
 use crate::model::MergeRequest;
+use crate::prompt::PromptMode;
 use crate::work::{
     iterm_session_ids, load_seen, load_worktabs, mr_key, prune_prompts, save_seen, save_worktabs,
 };
 
 /// The open prompt-mode menu (Shift+Enter).
+///
+/// Keyed by the MR's storage key, not its index in `App.items`: the menu can
+/// sit open across a background reload (`REFRESH_SECS` fires regardless of
+/// what popup is up), which reorders/reshuffles `items`. An index captured
+/// at open time would then either go out of bounds or silently point at a
+/// different MR by the time Enter is pressed — see `App::find_item`.
 pub(crate) struct PromptMenu {
-    pub(crate) item: usize, // index of the MR in App.items
-    pub(crate) sel: usize,  // selected mode (index into PromptMode::ALL)
+    pub(crate) key: String,          // storage key of the MR (App::find_item)
+    pub(crate) items: Vec<MenuItem>, // the entries valid for this MR right now
+    pub(crate) sel: usize,           // selected index into `items`
+}
+
+/// Pending confirmation before "start a new session" discards an existing
+/// binding (see `MenuAction::StartNew` in `menu.rs`). Set only when picking
+/// that item on an MR that already has one; cleared on any answer.
+///
+/// Keyed by storage key for the same reason as `PromptMenu::key` — this one
+/// matters more, since acting on a stale index here would silently overwrite
+/// a *different* MR's binding without ever showing the user a confirmation
+/// for it, defeating the whole point of asking first.
+pub(crate) struct ConfirmOverwrite {
+    pub(crate) key: String,
+    pub(crate) mode: PromptMode,
 }
 
 pub(crate) struct App {
@@ -37,6 +59,8 @@ pub(crate) struct App {
     pub(crate) pending: Option<Receiver<Vec<MergeRequest>>>, // background data load
     pub(crate) spinner: usize,                               // spinner animation frame
     pub(crate) menu: Option<PromptMenu>,                     // the open prompt-mode menu
+    // confirmation before a menu pick would discard an existing binding
+    pub(crate) confirm: Option<ConfirmOverwrite>,
     // error message on top of everything (any key closes it)
     pub(crate) notice: Option<String>,
     // the terminal tells Shift+Enter apart (kitty protocol)
@@ -60,6 +84,7 @@ impl App {
             pending: None,
             spinner: 0,
             menu: None,
+            confirm: None,
             notice: None,
             kbd_enhanced: false,
         };
@@ -204,11 +229,94 @@ impl App {
         self.order.get(self.sel).copied()
     }
 
+    /// The current index of an MR by its storage key, or `None` if it is no
+    /// longer in `items` (merged/closed and pruned since a popup referencing
+    /// it was opened). Re-resolving by key instead of trusting a stashed
+    /// index is what keeps `PromptMenu`/`ConfirmOverwrite` safe across a
+    /// background reload — see their doc comments.
+    pub(crate) fn find_item(&self, key: &str) -> Option<usize> {
+        self.items.iter().position(|mr| mr_key(mr) == key)
+    }
+
     pub(crate) fn step(&mut self, delta: isize) {
         let n = self.order.len();
         if n == 0 {
             return;
         }
         self.sel = (self.sel as isize + delta).rem_euclid(n as isize) as usize;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+    use std::time::Instant;
+
+    use super::*;
+    use crate::model::{CiStatus, ForgeId, Mergeable, ReviewState, Sev};
+
+    fn mr(project_id: u64, iid: u64) -> MergeRequest {
+        MergeRequest {
+            id: ForgeId::GitLab { project_id, iid },
+            path: "acme/backend".into(),
+            url: format!("https://example.com/mr/{iid}"),
+            title: "Fix the thing".into(),
+            author: "alice".into(),
+            draft: false,
+            conflicts: false,
+            merge_status: Mergeable::Ready,
+            pipeline: CiStatus::Success,
+            approved_by: vec![],
+            reviewers: vec![],
+            unresolved: vec![],
+            mine: true,
+            queue: None,
+            my_review: ReviewState::None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            action_label: "your turn".into(),
+            action_sev: Sev::Action,
+        }
+    }
+
+    fn app_with(items: Vec<MergeRequest>) -> App {
+        App {
+            items,
+            order: vec![],
+            mine_count: 0,
+            sel: 0,
+            top: 0,
+            show_drafts: false,
+            last_load: Instant::now(),
+            me: "me".to_string(),
+            work: serde_json::Map::new(),
+            seen: serde_json::Map::new(),
+            alive: HashSet::new(),
+            pending: None,
+            spinner: 0,
+            menu: None,
+            confirm: None,
+            notice: None,
+            kbd_enhanced: false,
+        }
+    }
+
+    #[test]
+    fn find_item_locates_by_storage_key_regardless_of_position() {
+        let app = app_with(vec![mr(1, 7), mr(1, 8), mr(1, 9)]);
+        assert_eq!(app.find_item("1!8"), Some(1));
+    }
+
+    #[test]
+    fn find_item_is_none_once_the_mr_is_no_longer_in_items() {
+        // The scenario this exists for: a background reload replaces `items`
+        // (merge/close/reorder) while a popup still holds the MR's key —
+        // `find_item` must say "gone", not resolve to whatever now sits at
+        // the old numeric position.
+        let app = app_with(vec![mr(1, 8)]);
+        assert_eq!(app.find_item("1!7"), None);
+
+        let empty = app_with(vec![]);
+        assert_eq!(empty.find_item("1!7"), None);
     }
 }
