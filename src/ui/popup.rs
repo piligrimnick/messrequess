@@ -72,7 +72,9 @@ pub(crate) fn render_menu(f: &mut Frame, app: &App) {
 
     let items = &menu.items;
     let w: u16 = 48;
-    let h: u16 = items.len() as u16 + 6;
+    // Content rows: mr title (1) + blank (1) + one row per item + blank (1) +
+    // the two-line footer hint (2), plus border (2) and padding (2) overhead.
+    let h: u16 = items.len() as u16 + 9;
     let area = f.area();
     let rect = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
@@ -122,6 +124,10 @@ pub(crate) fn render_menu(f: &mut Frame, app: &App) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "↑↓ select · ↵ launch · esc cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "n new session with this prompt",
         Style::default().fg(Color::DarkGray),
     )));
     f.render_widget(Paragraph::new(lines), inner);
@@ -303,6 +309,25 @@ mod tests {
         let dump = format!("{}", term.backend());
         assert!(dump.contains("Resume session (no prompt)"));
         assert!(dump.contains("Start new session (no prompt)"));
+    }
+
+    #[test]
+    fn menu_popup_hints_the_new_session_with_prompt_modifier() {
+        let mr = sample_mr();
+        let key = mr.storage_key();
+        let app = App {
+            items: vec![mr],
+            menu: Some(PromptMenu {
+                key,
+                items: MenuItem::menu_for(false),
+                sel: 0,
+            }),
+            ..base_app()
+        };
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(118, 46)).unwrap();
+        term.draw(|f| render_menu(f, &app)).unwrap();
+        let dump = format!("{}", term.backend());
+        assert!(dump.contains("n new session with this prompt"));
     }
 
     #[test]

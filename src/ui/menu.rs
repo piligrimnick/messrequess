@@ -61,9 +61,16 @@ impl MenuItem {
 /// What picking a menu item actually does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuAction {
-    /// The tab is already open — bring it to the front. Nothing is launched;
-    /// there is no mechanism here for injecting a prompt into a live tab.
+    /// The tab is already open and there is nothing to send — bring it to the
+    /// front. Only reachable for `ResumeSilent`: a `Prompt` pick on a live tab
+    /// has something to say, so it goes through `DeliverAndFocus` instead.
     Focus,
+    /// The tab is already open, and there is an agent in there to hand the
+    /// prompt to: write it to the session's prompt file and send one short
+    /// line into the live session pointing at that file, then bring the tab
+    /// to the front. See `work::deliver_to_live_session` for why this does
+    /// not retry the way a fresh launch does.
+    DeliverAndFocus(PromptMode),
     /// Reopen the existing session in a new tab and send this mode's prompt.
     ResumeWithPrompt(PromptMode),
     /// Reopen the existing session in a new tab and send nothing.
@@ -75,13 +82,32 @@ pub(crate) enum MenuAction {
 }
 
 /// The decision at the heart of the menu: given the MR's current binding
-/// state and which item was picked, what should happen.
+/// state, whether its tab is alive, which item was picked, and whether the
+/// "start fresh" modifier was used, what should happen.
+///
+/// `force_new` is how "new session, with a prompt" (picking a mode but
+/// wanting a brand-new session instead of resuming/delivering into the
+/// existing one) is expressed without a separate menu item per mode: on a
+/// `Prompt` item it always starts a new session with that mode's prompt,
+/// regardless of any existing binding or tab state — the caller still has to
+/// confirm if that discards a binding, same as `NewSession` today. It has no
+/// distinct meaning for `NewSession` (already "start new" on plain pick) or
+/// `ResumeSilent` (there is no prompt to attach to a new session), so both
+/// fall through to their normal behavior.
 ///
 /// Returns `None` only for `ResumeSilent` picked with no binding — a
 /// combination the menu must never actually offer (see `MenuItem::menu_for`).
 /// `None` is the safety net: if that invariant is ever violated, the result
 /// is a no-op, never a silent substitute action.
-pub(crate) fn decide(item: MenuItem, has_binding: bool, tab_alive: bool) -> Option<MenuAction> {
+pub(crate) fn decide(
+    item: MenuItem,
+    has_binding: bool,
+    tab_alive: bool,
+    force_new: bool,
+) -> Option<MenuAction> {
+    if let (MenuItem::Prompt(mode), true) = (item, force_new) {
+        return Some(MenuAction::StartNew(mode));
+    }
     match item {
         MenuItem::ResumeSilent if !has_binding => None,
         MenuItem::ResumeSilent => Some(if tab_alive {
@@ -93,7 +119,7 @@ pub(crate) fn decide(item: MenuItem, has_binding: bool, tab_alive: bool) -> Opti
         MenuItem::Prompt(mode) => Some(if !has_binding {
             MenuAction::StartNew(mode)
         } else if tab_alive {
-            MenuAction::Focus
+            MenuAction::DeliverAndFocus(mode)
         } else {
             MenuAction::ResumeWithPrompt(mode)
         }),
@@ -107,7 +133,7 @@ mod tests {
     #[test]
     fn no_binding_prompt_item_starts_new_with_that_mode() {
         assert_eq!(
-            decide(MenuItem::Prompt(PromptMode::Deep), false, false),
+            decide(MenuItem::Prompt(PromptMode::Deep), false, false, false),
             Some(MenuAction::StartNew(PromptMode::Deep))
         );
     }
@@ -115,23 +141,26 @@ mod tests {
     #[test]
     fn no_binding_ignores_tab_alive_it_cannot_be_meaningful_without_one() {
         assert_eq!(
-            decide(MenuItem::Prompt(PromptMode::Deep), false, true),
+            decide(MenuItem::Prompt(PromptMode::Deep), false, true, false),
             Some(MenuAction::StartNew(PromptMode::Deep))
         );
     }
 
     #[test]
-    fn binding_with_open_tab_focuses_instead_of_relaunching() {
+    fn binding_with_open_tab_delivers_the_prompt_and_focuses() {
+        // The bug this exists to fix: picking a mode while the tab is already
+        // open used to just focus it, silently dropping the prompt on the
+        // floor — see messreq-e5t.3.
         assert_eq!(
-            decide(MenuItem::Prompt(PromptMode::Surface), true, true),
-            Some(MenuAction::Focus)
+            decide(MenuItem::Prompt(PromptMode::Surface), true, true, false),
+            Some(MenuAction::DeliverAndFocus(PromptMode::Surface))
         );
     }
 
     #[test]
     fn binding_with_closed_tab_resumes_with_the_picked_prompt() {
         assert_eq!(
-            decide(MenuItem::Prompt(PromptMode::MyThreads), true, false),
+            decide(MenuItem::Prompt(PromptMode::MyThreads), true, false, false),
             Some(MenuAction::ResumeWithPrompt(PromptMode::MyThreads))
         );
     }
@@ -141,7 +170,7 @@ mod tests {
         for (has_binding, tab_alive) in [(false, false), (false, true), (true, false), (true, true)]
         {
             assert_eq!(
-                decide(MenuItem::NewSession, has_binding, tab_alive),
+                decide(MenuItem::NewSession, has_binding, tab_alive, false),
                 Some(MenuAction::StartNew(PromptMode::Blank)),
                 "has_binding={has_binding} tab_alive={tab_alive}"
             );
@@ -150,14 +179,14 @@ mod tests {
 
     #[test]
     fn resume_silent_without_a_binding_is_refused() {
-        assert_eq!(decide(MenuItem::ResumeSilent, false, false), None);
-        assert_eq!(decide(MenuItem::ResumeSilent, false, true), None);
+        assert_eq!(decide(MenuItem::ResumeSilent, false, false, false), None);
+        assert_eq!(decide(MenuItem::ResumeSilent, false, true, false), None);
     }
 
     #[test]
     fn resume_silent_with_open_tab_focuses_rather_than_relaunching() {
         assert_eq!(
-            decide(MenuItem::ResumeSilent, true, true),
+            decide(MenuItem::ResumeSilent, true, true, false),
             Some(MenuAction::Focus)
         );
     }
@@ -165,9 +194,54 @@ mod tests {
     #[test]
     fn resume_silent_with_closed_tab_resumes_sending_nothing() {
         assert_eq!(
-            decide(MenuItem::ResumeSilent, true, false),
+            decide(MenuItem::ResumeSilent, true, false, false),
             Some(MenuAction::ResumeSilent)
         );
+    }
+
+    #[test]
+    fn force_new_on_a_prompt_item_always_starts_a_fresh_session_with_that_mode() {
+        // "New session, with a prompt": the modifier key on a mode item, not a
+        // separate menu entry. Every binding/tab combination collapses to the
+        // same action — the caller (has_binding) still decides whether to
+        // confirm before it discards an existing session.
+        for (has_binding, tab_alive) in [(false, false), (false, true), (true, false), (true, true)]
+        {
+            assert_eq!(
+                decide(
+                    MenuItem::Prompt(PromptMode::Deep),
+                    has_binding,
+                    tab_alive,
+                    true
+                ),
+                Some(MenuAction::StartNew(PromptMode::Deep)),
+                "has_binding={has_binding} tab_alive={tab_alive}"
+            );
+        }
+    }
+
+    #[test]
+    fn force_new_on_new_session_item_is_the_same_as_a_plain_pick() {
+        assert_eq!(
+            decide(MenuItem::NewSession, true, true, true),
+            Some(MenuAction::StartNew(PromptMode::Blank))
+        );
+    }
+
+    #[test]
+    fn force_new_on_resume_silent_has_no_prompt_to_attach_so_it_falls_back() {
+        // ResumeSilent carries no prompt, so "start fresh with this prompt"
+        // does not apply to it — it falls through to its normal behavior
+        // (including the no-binding refusal) rather than inventing one.
+        assert_eq!(
+            decide(MenuItem::ResumeSilent, true, true, true),
+            Some(MenuAction::Focus)
+        );
+        assert_eq!(
+            decide(MenuItem::ResumeSilent, true, false, true),
+            Some(MenuAction::ResumeSilent)
+        );
+        assert_eq!(decide(MenuItem::ResumeSilent, false, false, true), None);
     }
 
     #[test]

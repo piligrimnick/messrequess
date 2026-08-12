@@ -22,8 +22,8 @@ use crate::model::MergeRequest;
 use crate::prompt::{build_prompt_line, PromptMode};
 use crate::time::rel_age;
 use crate::work::{
-    focus_iterm, mr_key, resume_work, resume_work_with_prompt, save_worktabs, start_work,
-    touch_heartbeat,
+    deliver_to_live_session, focus_iterm, mr_key, resume_work, resume_work_with_prompt,
+    save_worktabs, start_work, touch_heartbeat,
 };
 
 const REFRESH_SECS: u64 = 300;
@@ -157,11 +157,13 @@ fn launch_resume(app: &mut App, item: usize, entry: serde_json::Value, prompt: S
 /// (merged/closed and pruned in the meantime), this is a no-op notice rather
 /// than acting on whatever now happens to sit at the old index.
 ///
-/// `menu::decide` turns the MR's current binding state plus the picked item
-/// into a `MenuAction`; this applies it. Starting a brand-new session over an
-/// existing binding needs confirmation first, so that one case is deferred to
-/// `app.confirm` instead of acted on immediately — see `ConfirmOverwrite`.
-fn handle_menu_pick(app: &mut App, key: &str, picked: MenuItem) {
+/// `menu::decide` turns the MR's current binding state, whether its tab is
+/// alive, the picked item, and whether the "start fresh" modifier
+/// (`force_new`) was used into a `MenuAction`; this applies it. Starting a
+/// brand-new session over an existing binding needs confirmation first, so
+/// that one case is deferred to `app.confirm` instead of acted on immediately
+/// — see `ConfirmOverwrite`.
+fn handle_menu_pick(app: &mut App, key: &str, picked: MenuItem, force_new: bool) {
     app.refresh_alive();
     let Some(item) = app.find_item(key) else {
         app.notice = Some("That MR is no longer in the list.".to_string());
@@ -170,7 +172,7 @@ fn handle_menu_pick(app: &mut App, key: &str, picked: MenuItem) {
     let (existing, tab_alive) = binding_state(app, item);
     let has_binding = existing.is_some();
 
-    let Some(action) = decide(picked, has_binding, tab_alive) else {
+    let Some(action) = decide(picked, has_binding, tab_alive, force_new) else {
         // The menu never actually offers this combination (see
         // `MenuItem::menu_for`) — a defensive no-op, not a silent substitute.
         return;
@@ -184,6 +186,15 @@ fn handle_menu_pick(app: &mut App, key: &str, picked: MenuItem) {
                 .unwrap_or("")
                 .to_string();
             focus_iterm(&sid);
+            app.mark_seen(item);
+        }
+        MenuAction::DeliverAndFocus(mode) => {
+            let entry = existing.expect("has_binding was checked by decide()");
+            let claude_sid = entry["claude_session"].as_str().unwrap_or("").to_string();
+            let iterm_sid = entry["iterm_session"].as_str().unwrap_or("").to_string();
+            let prompt = build_prompt_line(&app.items[item], mode);
+            deliver_to_live_session(&claude_sid, &iterm_sid, &prompt);
+            focus_iterm(&iterm_sid);
             app.mark_seen(item);
         }
         MenuAction::StartNew(mode) if has_binding => {
@@ -275,7 +286,18 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                         KeyCode::Enter => {
                             if let Some(m) = app.menu.take() {
                                 let picked = m.items[m.sel];
-                                handle_menu_pick(app, &m.key, picked);
+                                handle_menu_pick(app, &m.key, picked, false);
+                            }
+                        }
+                        // "New session, with a prompt": on a mode item this
+                        // starts a fresh session with that prompt instead of
+                        // resuming/delivering into whatever is already bound
+                        // — see `menu::decide`'s `force_new` and the popup
+                        // footer hint.
+                        KeyCode::Char('n') => {
+                            if let Some(m) = app.menu.take() {
+                                let picked = m.items[m.sel];
+                                handle_menu_pick(app, &m.key, picked, true);
                             }
                         }
                         _ => {}

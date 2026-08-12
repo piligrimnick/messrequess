@@ -364,6 +364,43 @@ pub(crate) fn focus_iterm(session_id: &str) {
         .output();
 }
 
+/// The single line sent into a live session so the agent already running
+/// there knows a new prompt is waiting and where to find it. Kept pure and
+/// separate from the `it2` call so the wording is covered by a unit test
+/// without touching a real session.
+fn live_session_line(file: &std::path::Path) -> String {
+    format!("New task queued — read and follow {}", file.display())
+}
+
+/// Deliver a prompt into a session whose tab is already open, instead of
+/// launching or resuming anything. The prompt goes to the same per-session
+/// file `start_work`/`resume_work_with_prompt` write (`<claude_session>.txt`
+/// under `prompts_dir()`), and a single short line naming that file is sent
+/// into the live iTerm2 session so the agent already running there reads it
+/// and acts on it — see `messreq-e5t.3`.
+///
+/// Deliberately does not retry or poll for confirmation, unlike
+/// `open_tab_capture`'s sentinel handshake: that handshake re-presses Enter
+/// into a *fresh* session it just created, where nothing else is happening.
+/// Here there is a live human (or agent) session in the way — a missed
+/// submit just leaves the file on disk for them to notice or press Enter
+/// themselves, while a retried Enter could submit whatever they were in the
+/// middle of typing.
+pub(crate) fn deliver_to_live_session(claude_session: &str, iterm_session: &str, prompt: &str) {
+    let file = prompts_dir().join(format!("{claude_session}.txt"));
+    let _ = std::fs::write(&file, prompt);
+    let line = live_session_line(&file);
+    // Two separate sends, mirroring the type-then-submit idiom
+    // `open_tab_capture` relies on elsewhere in this file: the text, then a
+    // distinct Enter keystroke. Sent once each — no retry, see above.
+    let _ = Command::new("it2")
+        .args(["session", "send", "-s", iterm_session, &line])
+        .output();
+    let _ = Command::new("it2")
+        .args(["session", "send", "-s", iterm_session, "\n"])
+        .output();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,5 +434,17 @@ mod tests {
             wrapped,
             r#"sh -c 'cd '\''/w'\'' && exec claude --resume '\''x'\'''"#
         );
+    }
+
+    #[test]
+    fn live_session_line_names_the_file_and_says_what_to_do_with_it() {
+        let line = live_session_line(std::path::Path::new(
+            "/Users/me/.local/state/messreq/prompts/abc123.txt",
+        ));
+        assert!(line.contains("/Users/me/.local/state/messreq/prompts/abc123.txt"));
+        assert!(line.to_lowercase().contains("read"));
+        // One line only — it goes through `it2 session send`, where a long
+        // typed line is exactly what loses its Enter (see `claude_script`).
+        assert!(!line.contains('\n'));
     }
 }
