@@ -2,9 +2,14 @@
 //!
 //! worktabs.json: key "pid!iid" → { claude_session, name, iterm_session,
 //! started }. claude_session is stored permanently — it lets you resume the
-//! session even after the tab has been closed. iterm_session is checked against
-//! `it2 session list` to show whether the tab is open right now (🔨) or closed
-//! and available for a resume (💤).
+//! session even after the tab has been closed. iterm_session is checked
+//! against the active `terminal` backend's live-session list to show whether
+//! the tab is open right now (🔨) or closed and available for a resume (💤).
+//! The field is called `iterm_session` regardless of which backend is
+//! configured (see `config::terminal_backend`) — it is an on-disk contract
+//! with files already on the user's machine (messreq-ltu), and renaming it
+//! needs a migration the way `migrate.rs` did for the `mrdash` → `messreq`
+//! rename. New backends reuse the same key for their own session ids.
 //!
 //! seen.json: key "pid!iid" → the last seen updated_at (ISO8601). A card counts
 //! as "new" if its current updated_at is newer than the stored one (or it is
@@ -19,7 +24,6 @@
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
 
 use serde_json::json;
 
@@ -107,24 +111,22 @@ pub fn heartbeat_fresh(threshold_secs: u64) -> bool {
         .unwrap_or(false)
 }
 
-/// Full ids of every live iTerm2 session (machine-readable, via it2 --json).
+/// Full ids of every live session in the configured terminal backend — kept
+/// under its historical name (see the module doc on `iterm_session`) even
+/// though the backend may now be tmux.
+///
+/// A broken `"terminal"` config value is not surfaced here: `iterm_session_ids`
+/// is polled on every UI tick purely to refresh 🔨/💤 badges, not a place with
+/// a channel back to the user. It resolves to "no live sessions" instead,
+/// exactly like a real backend failure would; the loud, actionable error is
+/// the one `start_work`/`resume_work_with_prompt` return the moment the user
+/// actually tries to open or resume a session — the same way a bad
+/// `work_dir_for_mr` result is: checked on Enter, not every tick.
 pub(crate) fn iterm_session_ids() -> HashSet<String> {
-    let mut ids = HashSet::new();
-    if let Ok(out) = Command::new("it2")
-        .args(["session", "list", "--json"])
-        .output()
-    {
-        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) {
-            if let Some(arr) = v.as_array() {
-                for s in arr {
-                    if let Some(id) = s.get("id").and_then(|x| x.as_str()) {
-                        ids.insert(id.to_string());
-                    }
-                }
-            }
-        }
-    }
-    ids
+    crate::config::terminal_backend()
+        .ok()
+        .and_then(|backend| backend.build().list_sessions())
+        .unwrap_or_default()
 }
 
 fn uuid() -> String {
@@ -152,7 +154,10 @@ fn now_hhmm() -> String {
 /// character — so neither `'` nor `\` may be left inside the quotes. Both are
 /// lifted out: `'\''` and `'\\'`. Outside quotes those two forms mean "a literal
 /// quote" and "a literal backslash" in all three shells.
-fn shq(s: &str) -> String {
+///
+/// `pub(crate)`: both terminal backends build POSIX command strings out of
+/// this (see `terminal::iterm2`), not just the script built right below.
+pub(crate) fn shq(s: &str) -> String {
     let mut out = String::with_capacity(s.len() + 2);
     out.push('\'');
     for c in s.chars() {
@@ -166,8 +171,10 @@ fn shq(s: &str) -> String {
     out
 }
 
-/// The claude launch script — pure POSIX: it runs inside `sh -c` (see
-/// `wrap_for_tab`), not in the shell of the tab.
+/// The claude launch script — pure POSIX, backend-agnostic: each
+/// `TerminalBackend::open` decides how to run it (typed into a shell for
+/// iTerm2, exec'd directly as the pane's process for tmux — see
+/// `terminal`'s module doc for why that distinction matters).
 ///
 /// The prompt is passed as a file via `"$(cat FILE)"` and is NOT typed into the
 /// command line in full: a long line (~1.5k+) does get typed out by
@@ -179,7 +186,8 @@ fn claude_script(work_dir: &str, args: &str) -> String {
     format!("cd {} && exec claude {}", shq(work_dir), args)
 }
 
-/// Open a new iTerm2 tab with claude for this MR (with a fixed session id).
+/// Open a new session in the configured terminal backend with claude for
+/// this MR (with a fixed session id).
 pub(crate) fn start_work(
     mr: &MergeRequest,
     mode: PromptMode,
@@ -202,7 +210,7 @@ pub(crate) fn start_work(
             shq(&file.display().to_string())
         )
     };
-    open_tab_capture(&claude_script(&work_dir, &args), sid, name)
+    open_session(&claude_script(&work_dir, &args), sid, name)
 }
 
 /// Resume an existing claude session by its id in a new tab, with a prompt
@@ -248,10 +256,12 @@ pub(crate) fn resume_work_with_prompt(
             shq(&file.display().to_string())
         )
     };
-    open_tab_capture(&claude_script(&work_dir, &args), sid, name)
+    open_session(&claude_script(&work_dir, &args), sid, name)
 }
 
-fn prompts_dir() -> PathBuf {
+/// `pub(crate)`: the iTerm2 backend also writes its launch sentinel here (see
+/// `terminal::iterm2`).
+pub(crate) fn prompts_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     let dir = PathBuf::from(home).join(".local/state/messreq/prompts");
     let _ = std::fs::create_dir_all(&dir);
@@ -283,85 +293,32 @@ pub(crate) fn prune_prompts(work: &serde_json::Map<String, serde_json::Value>) {
     }
 }
 
-/// The line typed into the new tab: the whole POSIX script goes inside
-/// `sh -c '…'`.
-///
-/// The shell of the tab can be anything (fish for the author, zsh for most
-/// users), while the script uses `"$(cat …)"`, which fish does not have.
-/// Wrapping it in `sh -c` makes the tab's shell irrelevant: the only thing it
-/// has to understand is a single command with a single single-quoted argument,
-/// and fish and bash/zsh do that identically (see `shq`). The alternative —
-/// detecting the shell and keeping two dialects of the command — adds an extra
-/// branch of code and breaks silently on anything that is neither fish nor zsh.
-/// The wrapped sh inherits PATH from the tab's interactive shell, so claude is
-/// found.
-fn wrap_for_tab(script: &str) -> String {
-    format!("sh -c {}", shq(script))
-}
-
-/// Open a tab and confirm DETERMINISTICALLY that the command really ran. The
-/// command is prefixed with `touch <sentinel>` — the file appears exactly at
-/// the moment the line is executed. We poll the sentinel; while it is missing
-/// we keep pushing Enter into that session (it2 sometimes does not submit the
-/// input on its own). We return an entry only when the launch is confirmed —
-/// otherwise Err (no false "open" states that cannot be resumed).
-fn open_tab_capture(cmd: &str, sid: String, name: String) -> Result<serde_json::Value, WorkError> {
-    let sentinel = prompts_dir().join(format!("{sid}.started"));
-    let _ = std::fs::remove_file(&sentinel);
-    let full = wrap_for_tab(&format!(
-        "touch {}; {}",
-        shq(&sentinel.display().to_string()),
-        cmd
-    ));
-
-    let before = iterm_session_ids();
-    // .output() (not .status()) — otherwise it2's stdout "Created new tab: N" leaks into the TUI.
-    let _ = Command::new("it2")
-        .args(["tab", "new", "-c", &full])
-        .output();
-
-    // The id of the new session = the difference between the snapshots (it does
-    // not show up instantly).
-    let mut new_id = String::new();
-    for _ in 0..8 {
-        if let Some(id) = iterm_session_ids().difference(&before).next() {
-            new_id = id.clone();
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(150));
-    }
-
-    // Handshake: wait for the launch confirmation, pushing Enter while it is missing.
-    let mut started = false;
-    for _ in 0..24 {
-        if sentinel.exists() {
-            started = true;
-            break;
-        }
-        if !new_id.is_empty() {
-            let _ = Command::new("it2")
-                .args(["session", "send", "-s", &new_id, "\n"])
-                .output();
-        }
-        std::thread::sleep(Duration::from_millis(250));
-    }
-    let _ = std::fs::remove_file(&sentinel);
-
-    if !started {
-        return Err(WorkError::LaunchNotConfirmed);
-    }
+/// Open a session in the configured terminal backend and build the
+/// `worktabs.json` entry for it. The backend-specific launch mechanics (and,
+/// for iTerm2, the sentinel-confirm handshake — see `terminal::iterm2`) live
+/// in `TerminalBackend::open`; this is just the part every backend shares:
+/// pick the backend, ask it to open `cmd`, and shape the result the same way
+/// regardless of which backend answered.
+fn open_session(cmd: &str, sid: String, name: String) -> Result<serde_json::Value, WorkError> {
+    let backend = crate::config::terminal_backend()?.build();
+    let session_id = backend.open(cmd, &sid, &name)?;
     Ok(json!({
         "claude_session": sid,
         "name": name,
-        "iterm_session": new_id,
+        "iterm_session": session_id,
         "started": now_hhmm(),
     }))
 }
 
+/// Bring a live session to the front, in whichever terminal backend is
+/// configured. See `iterm_session_ids` for why a broken `"terminal"` config
+/// value is swallowed here rather than surfaced: there is no error channel on
+/// this path, and the loud version of that error already fired when the
+/// session was opened.
 pub(crate) fn focus_iterm(session_id: &str) {
-    let _ = Command::new("it2")
-        .args(["session", "focus", session_id])
-        .output();
+    if let Ok(backend) = crate::config::terminal_backend() {
+        let _ = backend.build().focus(session_id);
+    }
 }
 
 /// The single line sent into a live session so the agent already running
@@ -376,29 +333,24 @@ fn live_session_line(file: &std::path::Path) -> String {
 /// launching or resuming anything. The prompt goes to the same per-session
 /// file `start_work`/`resume_work_with_prompt` write (`<claude_session>.txt`
 /// under `prompts_dir()`), and a single short line naming that file is sent
-/// into the live iTerm2 session so the agent already running there reads it
-/// and acts on it — see `messreq-e5t.3`.
+/// into the live session so the agent already running there reads it and
+/// acts on it — see `messreq-e5t.3`.
 ///
-/// Deliberately does not retry or poll for confirmation, unlike
-/// `open_tab_capture`'s sentinel handshake: that handshake re-presses Enter
-/// into a *fresh* session it just created, where nothing else is happening.
-/// Here there is a live human (or agent) session in the way — a missed
-/// submit just leaves the file on disk for them to notice or press Enter
+/// Deliberately does not retry or poll for confirmation, unlike `open`'s
+/// handshake on the iTerm2 backend: that handshake re-presses Enter into a
+/// *fresh* session it just created, where nothing else is happening. Here
+/// there is a live human (or agent) session in the way — a missed submit
+/// just leaves the file on disk for them to notice or press Enter
 /// themselves, while a retried Enter could submit whatever they were in the
-/// middle of typing.
+/// middle of typing. Same reasoning applies regardless of backend, so this
+/// stays a single retry-free call into `TerminalBackend::send_line`.
 pub(crate) fn deliver_to_live_session(claude_session: &str, iterm_session: &str, prompt: &str) {
     let file = prompts_dir().join(format!("{claude_session}.txt"));
     let _ = std::fs::write(&file, prompt);
     let line = live_session_line(&file);
-    // Two separate sends, mirroring the type-then-submit idiom
-    // `open_tab_capture` relies on elsewhere in this file: the text, then a
-    // distinct Enter keystroke. Sent once each — no retry, see above.
-    let _ = Command::new("it2")
-        .args(["session", "send", "-s", iterm_session, &line])
-        .output();
-    let _ = Command::new("it2")
-        .args(["session", "send", "-s", iterm_session, "\n"])
-        .output();
+    if let Ok(backend) = crate::config::terminal_backend() {
+        let _ = backend.build().send_line(iterm_session, &line);
+    }
 }
 
 #[cfg(test)]
@@ -428,23 +380,15 @@ mod tests {
     }
 
     #[test]
-    fn wrap_for_tab_produces_one_sh_c_call() {
-        let wrapped = wrap_for_tab("cd '/w' && exec claude --resume 'x'");
-        assert_eq!(
-            wrapped,
-            r#"sh -c 'cd '\''/w'\'' && exec claude --resume '\''x'\'''"#
-        );
-    }
-
-    #[test]
     fn live_session_line_names_the_file_and_says_what_to_do_with_it() {
         let line = live_session_line(std::path::Path::new(
             "/Users/me/.local/state/messreq/prompts/abc123.txt",
         ));
         assert!(line.contains("/Users/me/.local/state/messreq/prompts/abc123.txt"));
         assert!(line.to_lowercase().contains("read"));
-        // One line only — it goes through `it2 session send`, where a long
-        // typed line is exactly what loses its Enter (see `claude_script`).
+        // One line only — it goes through `TerminalBackend::send_line`, where
+        // a long typed line is exactly what risks losing its Enter (it2; see
+        // `claude_script` and `terminal::iterm2`).
         assert!(!line.contains('\n'));
     }
 }

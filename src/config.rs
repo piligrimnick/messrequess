@@ -1,6 +1,6 @@
 //! `~/.config/messreq/config.json` — where the local copies of the repositories
-//! live. The Claude session for an MR is opened in the directory of the project
-//! that MR belongs to:
+//! live, and which terminal backend opens Claude sessions. The Claude session
+//! for an MR is opened in the directory of the project that MR belongs to:
 //!
 //! ```json
 //! {
@@ -8,7 +8,8 @@
 //!   "projects": {
 //!     "acme/backend": "~/src/backend",
 //!     "acme/frontend": "~/src/frontend"
-//!   }
+//!   },
+//!   "terminal": "tmux"
 //! }
 //! ```
 //!
@@ -16,6 +17,10 @@
 //! the card (`MergeRequest.path`, see `project_path_from_url`). `default_path`
 //! is the fallback for every other project; with a monorepo it is enough on
 //! its own.
+//!
+//! `terminal` picks the backend sessions open in — `"iterm2"` (the default;
+//! omit the key entirely for the same effect) or `"tmux"` — see
+//! `terminal_backend` and the `terminal` module.
 //!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
@@ -26,12 +31,17 @@ use std::path::PathBuf;
 
 use crate::error::WorkError;
 use crate::model::MergeRequest;
+use crate::terminal::TerminalBackendName;
 
 #[derive(Default)]
 struct Config {
     default_path: Option<String>,
     /// The keys are normalized through `norm_project`.
     projects: HashMap<String, String>,
+    /// Raw `"terminal"` value, validated later by `terminal_backend` — kept
+    /// as a string here so an unrecognized value can still be echoed back in
+    /// the error instead of being swallowed during parsing.
+    terminal: Option<String>,
 }
 
 fn home_dir() -> String {
@@ -87,6 +97,11 @@ impl Config {
                 .filter(|s| !s.trim().is_empty())
                 .map(String::from),
             projects,
+            terminal: v
+                .get("terminal")
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(String::from),
         }
     }
 
@@ -125,6 +140,31 @@ pub(crate) fn work_dir_for_mr(mr: &MergeRequest) -> Result<String, WorkError> {
         });
     }
     Ok(dir)
+}
+
+/// Which terminal backend to open sessions in, from the `"terminal"` key in
+/// `~/.config/messreq/config.json`.
+///
+/// No key at all — the common case — resolves to iTerm2, today's only
+/// backend, so a config file written before messreq-ltu keeps behaving
+/// exactly as before. An unrecognized value (a typo, or a backend that does
+/// not exist yet) is an error rather than a silent fallback to iTerm2: going
+/// quiet there would hide the typo behind behavior that looks correct until
+/// the user notices sessions are not opening where they expected.
+pub(crate) fn terminal_backend() -> Result<TerminalBackendName, WorkError> {
+    resolve_terminal_backend(Config::load().terminal.as_deref())
+}
+
+/// The validation itself, pulled out of `terminal_backend` so it can be unit
+/// tested without touching the real `~/.config/messreq/config.json`.
+fn resolve_terminal_backend(value: Option<&str>) -> Result<TerminalBackendName, WorkError> {
+    match value {
+        None => Ok(TerminalBackendName::Iterm2),
+        Some(v) => TerminalBackendName::parse(v).ok_or_else(|| WorkError::UnknownTerminalBackend {
+            value: v.to_string(),
+            config_path: config_path(),
+        }),
+    }
 }
 
 #[cfg(test)]
@@ -194,5 +234,52 @@ mod tests {
         assert_eq!(expand_home("~", "/home/me/"), "/home/me/");
         assert_eq!(expand_home("/abs/~/x", "/home/me"), "/abs/~/x");
         assert_eq!(expand_home("~/x", "/home/me/"), "/home/me/x");
+    }
+
+    #[test]
+    fn config_parses_the_terminal_key() {
+        let cfg = Config::parse(r#"{"terminal": "tmux"}"#);
+        assert_eq!(cfg.terminal.as_deref(), Some("tmux"));
+    }
+
+    #[test]
+    fn no_terminal_key_is_none_not_a_blank_string() {
+        assert_eq!(Config::parse(CFG).terminal, None);
+        assert_eq!(Config::parse(r#"{"terminal": "  "}"#).terminal, None);
+    }
+
+    #[test]
+    fn missing_terminal_key_resolves_to_iterm2() {
+        // No config change at all must reproduce today's only behavior —
+        // the owner's hard requirement for trying tmux to be reversible.
+        assert!(matches!(
+            resolve_terminal_backend(None),
+            Ok(TerminalBackendName::Iterm2)
+        ));
+    }
+
+    #[test]
+    fn terminal_iterm2_resolves_explicitly_too() {
+        assert!(matches!(
+            resolve_terminal_backend(Some("iterm2")),
+            Ok(TerminalBackendName::Iterm2)
+        ));
+    }
+
+    #[test]
+    fn terminal_tmux_resolves_to_tmux() {
+        assert!(matches!(
+            resolve_terminal_backend(Some("tmux")),
+            Ok(TerminalBackendName::Tmux)
+        ));
+    }
+
+    #[test]
+    fn unknown_terminal_value_is_an_explicit_error_not_a_fallback() {
+        let err = resolve_terminal_backend(Some("kitty")).unwrap_err();
+        match err {
+            WorkError::UnknownTerminalBackend { value, .. } => assert_eq!(value, "kitty"),
+            other => panic!("expected UnknownTerminalBackend, got {other:?}"),
+        }
     }
 }

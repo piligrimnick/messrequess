@@ -1,5 +1,6 @@
 //! The error type returned along the "open a Claude session for this MR" path:
-//! `work_dir_for_mr`, `start_work`, `resume_work`, `open_tab_capture`.
+//! `work_dir_for_mr`, `start_work`, `resume_work`, `config::terminal_backend`,
+//! and each `TerminalBackend::open`.
 //!
 //! These used to return `Result<_, String>`. A plain string can be shown to a
 //! human, but a caller cannot branch on it — once the code is split across
@@ -29,9 +30,20 @@ pub(crate) enum WorkError {
         project: String,
         config_path: PathBuf,
     },
-    /// The iTerm2 tab opened, but the launch script never touched its
-    /// sentinel file, so we cannot confirm `claude` actually started.
-    LaunchNotConfirmed,
+    /// The terminal backend accepted the launch, but the running session
+    /// never confirmed it (iTerm2: the launch script never touched its
+    /// sentinel file; tmux: the launch command itself failed or returned no
+    /// pane id). `backend`/`tool_hint` name what to check, so the message
+    /// stays specific per backend without a new variant per backend.
+    LaunchNotConfirmed {
+        backend: &'static str,
+        tool_hint: &'static str,
+    },
+    /// The `"terminal"` key in `~/.config/messreq/config.json` is set to
+    /// something other than a recognized backend name. An unrecognized value
+    /// must not silently fall back to iTerm2 — that would be a surprising
+    /// default for someone who typo'd `"tmux"`.
+    UnknownTerminalBackend { value: String, config_path: PathBuf },
 }
 
 impl fmt::Display for WorkError {
@@ -60,10 +72,20 @@ impl fmt::Display for WorkError {
                 project,
                 config_path.display(),
             ),
-            WorkError::LaunchNotConfirmed => write!(
+            WorkError::LaunchNotConfirmed {
+                backend,
+                tool_hint,
+            } => write!(
                 f,
-                "The iTerm2 tab opened, but the command in it never confirmed the launch.\n\n\
-                 Check that `it2` and `claude` work."
+                "The {backend} session opened, but the command in it never confirmed the launch.\n\n\
+                 Check that {tool_hint} and `claude` work."
+            ),
+            WorkError::UnknownTerminalBackend { value, config_path } => write!(
+                f,
+                "Unknown \"terminal\" backend \"{value}\" in {}.\n\n\
+                 Valid values: \"iterm2\" (the default — remove the key entirely for the \
+                 same effect) or \"tmux\".",
+                config_path.display(),
             ),
         }
     }
