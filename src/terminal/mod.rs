@@ -6,14 +6,18 @@
 //! [`iterm2::Iterm2Backend`] (today's behavior, moved here unchanged) and
 //! [`tmux::TmuxBackend`] are its two implementations.
 //!
-//! Selection reads the `"terminal"` key in `~/.config/messreq/config.json`
-//! first (see `config::terminal_backend`) — an explicit `"iterm2"` or
-//! `"tmux"` always wins, so trying one and going back stays a one-line edit.
-//! No key at all falls through to `detect::detect_backend` (messreq-e5t.5):
-//! inside tmux, tmux; otherwise a working iTerm2; otherwise tmux as a
-//! universal fallback; otherwise a `WorkError` naming what to install. An
-//! unrecognized configured value is also a `WorkError`, not a silent
-//! fallback.
+//! Selection checks, in order (see `config::resolve_terminal_backend_with`):
+//! the `MESSREQ_TERMINAL` environment variable (messreq-e5t.6), then the
+//! `"terminal"` key in `~/.config/messreq/config.json` (see
+//! `config::terminal_backend`), then detection. An explicit `"iterm2"` or
+//! `"tmux"` from either of the first two always wins over what comes after
+//! it, so trying one and going back stays a one-line edit (or a one-off
+//! `MESSREQ_TERMINAL=... messreq` that touches no file at all). Neither set
+//! falls through to `detect::detect_backend` (messreq-e5t.5): inside tmux,
+//! tmux; otherwise a working iTerm2; otherwise tmux as a universal fallback;
+//! otherwise a `WorkError` naming what to install. An unrecognized value
+//! from `MESSREQ_TERMINAL` or the config key is also a `WorkError`, not a
+//! silent fallback to the next input.
 //!
 //! `list_sessions`/`send_line`/`focus` return `Option`/`bool` instead of
 //! propagating an error, because they are read as capabilities, not fallible

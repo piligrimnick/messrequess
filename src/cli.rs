@@ -39,8 +39,14 @@ Run modes:
   --help, -h       print this help and exit
 
 Environment:
-  MESSREQ_DEBUG=1  print diagnostics for failed glab calls, plus
-                   `glab auth status`
+  MESSREQ_DEBUG=1        print diagnostics for failed glab calls, plus
+                         `glab auth status`
+  MESSREQ_TERMINAL       force the terminal backend for this run: \"iterm2\"
+                         or \"tmux\", case-insensitive — wins over the
+                         \"terminal\" key in config.json and over
+                         auto-detection. Unset or empty falls through to
+                         them; an unrecognized value is an error, not a
+                         silent fallback.
 
 Configuration:
   ~/.config/messreq/config.json    maps a GitLab project path to its local

@@ -32,7 +32,11 @@ const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"
 pub fn print_plain(items: &[MergeRequest]) {
     match crate::config::resolved_terminal_backend() {
         Ok((name, source)) => {
-            println!("Terminal backend: {} ({})", name.as_str(), source.explain())
+            println!(
+                "Terminal backend: {} ({})",
+                name.as_str(),
+                source.explain(name)
+            )
         }
         Err(err) => println!("Terminal backend: unavailable — {err}"),
     }
