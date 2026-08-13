@@ -125,7 +125,7 @@ touching the code, and the failure lands on whoever pushes next. Pinning it is
 
 You can build while the TUI is running — cargo writes a new file and swaps it in, and the running process keeps living on the old inode (and therefore on the old code, until you restart it).
 
-`cargo test` runs 163 unit tests plus 3 that are `#[ignore]`d because they drive a real tmux server (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff, terminal backends, and building and escaping the tab command. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
+`cargo test` runs 164 unit tests plus 5 that are `#[ignore]`d because they drive a real tmux server (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff, terminal backends, and building and escaping the tab command. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
 
 ```bash
 messreq                    # TUI
