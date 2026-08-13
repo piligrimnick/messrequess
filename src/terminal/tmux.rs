@@ -3,12 +3,38 @@
 //! Alacritty, Terminal.app, anything — and it is the only backend that also
 //! works on Linux (messreq-m3d).
 //!
-//! All windows/panes messreq opens live in one dedicated tmux session
-//! (`SESSION`), created lazily. Two starting states are both normal and
-//! handled the same way, by checking `has-session` first:
+//! Where a window lands depends on whether messreq itself is running inside
+//! tmux (messreq-e5t.4):
 //!
-//! - no tmux server running at all (nothing to attach to yet);
-//! - messreq itself running outside tmux (no `$TMUX` in its own environment).
+//! - **Inside tmux** (`$TMUX_PANE` set): new windows go into the session
+//!   messreq itself is running in — right next to what the user is already
+//!   looking at. That is the entire point of choosing tmux as a backend;
+//!   creating them somewhere else meant the dashboard looked like it did
+//!   nothing, because the new window never appeared on screen.
+//! - **Outside tmux**: there is no "current session" to target, so windows
+//!   fall back to one dedicated session (`SESSION`), created lazily. Two
+//!   starting states are both normal and handled the same way, by checking
+//!   `has-session` first: no tmux server running at all, or messreq's first
+//!   launch against an already-running server.
+//!
+//! `$TMUX` is the "am I inside tmux at all" signal, but resolving *which*
+//! session requires `$TMUX_PANE`: `tmux display-message` without an explicit
+//! `-t` falls back to "the most recently used session on the server", not
+//! the one messreq is actually running in (verified against a real tmux —
+//! calling it with no target and no `$TMUX_PANE` in the child's environment
+//! picked whichever session was created last, unrelated to any pane).
+//! Reading `$TMUX_PANE` ourselves and passing it explicitly as `-t` avoids
+//! depending on that fallback, and — unlike relying on the child process
+//! inheriting the parent's real environment — is directly injectable in
+//! tests without mutating process-wide env vars, which would race across
+//! parallel test threads and could accidentally pick up whatever real pane
+//! the test binary itself happens to be running in.
+//!
+//! `list_sessions` has to look at the whole server (`-a`), not just
+//! `SESSION`: bindings recorded before this fix point at pane ids inside the
+//! dedicated session, and those pane ids are still valid, but new windows
+//! after the fix can land in any session. The 🔨/💤 badges depend on seeing
+//! all of them regardless of which session they ended up in.
 //!
 //! Unlike the iTerm2 backend, there is no sentinel/retry handshake here: `it2
 //! tab new -c` *types* the command into a running shell and can lose the
@@ -37,18 +63,36 @@ use crate::error::WorkError;
 
 use super::TerminalBackend;
 
-/// The tmux session all messreq windows live in. Fixed rather than
+/// The tmux session windows fall back to when messreq is running outside
+/// tmux and has no current session to target. Fixed rather than
 /// configurable: one well-known name is what lets `list_sessions`/`open`
 /// agree on where to look without threading extra config through.
 const SESSION: &str = "messreq";
 
-#[derive(Default)]
 pub(crate) struct TmuxBackend {
     /// `-L <socket>` to target, instead of tmux's default socket. `None` in
     /// production (the user's own default tmux server); tests pass a
     /// dedicated throwaway socket so they never touch a real session — see
     /// `messreq-ltu`'s verification constraint.
     socket: Option<String>,
+    /// The pane messreq itself is running in, if it is running inside tmux
+    /// at all — `None` means "outside tmux", the signal for the dedicated
+    /// `SESSION` fallback. Production reads this from `$TMUX_PANE` (see the
+    /// module doc for why that and not implicit resolution); tests inject
+    /// it explicitly via `with_socket_and_own_pane` instead of mutating this
+    /// process's real environment.
+    own_pane: Option<String>,
+}
+
+impl Default for TmuxBackend {
+    fn default() -> Self {
+        TmuxBackend {
+            socket: None,
+            own_pane: std::env::var("TMUX_PANE")
+                .ok()
+                .filter(|pane| !pane.is_empty()),
+        }
+    }
 }
 
 impl TmuxBackend {
@@ -56,6 +100,21 @@ impl TmuxBackend {
     pub(crate) fn with_socket(socket: impl Into<String>) -> Self {
         TmuxBackend {
             socket: Some(socket.into()),
+            own_pane: None,
+        }
+    }
+
+    /// Test-only: simulates messreq itself running inside tmux, in the
+    /// session that owns `pane`, without touching this process's real
+    /// `$TMUX_PANE`.
+    #[cfg(test)]
+    pub(crate) fn with_socket_and_own_pane(
+        socket: impl Into<String>,
+        pane: impl Into<String>,
+    ) -> Self {
+        TmuxBackend {
+            socket: Some(socket.into()),
+            own_pane: Some(pane.into()),
         }
     }
 
@@ -77,6 +136,88 @@ impl TmuxBackend {
             .unwrap_or(false)
     }
 
+    /// Name of the session containing `target` — any valid tmux target
+    /// (pane, window, or session id) — or `None` if it can't be resolved
+    /// (target gone, wrong socket, no server).
+    fn session_of(&self, target: &str) -> Option<String> {
+        let out = self
+            .tmux(["display-message", "-p", "-t", target, "#{session_name}"])
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if name.is_empty() {
+            None
+        } else {
+            Some(name)
+        }
+    }
+
+    /// The session messreq itself is running in, if `own_pane` resolves to
+    /// one — `None` means "outside tmux" (or the pane no longer exists),
+    /// the signal to fall back to the dedicated `SESSION`.
+    fn current_session(&self) -> Option<String> {
+        self.own_pane
+            .as_deref()
+            .and_then(|pane| self.session_of(pane))
+    }
+
+    /// Args for opening a window in an already-existing `session`. The
+    /// trailing ":" targets the session generally, letting tmux pick the
+    /// next free window index. Without it, `-t session` resolves to "the
+    /// session's current window" and `new-window` tries to insert at that
+    /// same index, which fails once a second window is opened ("index 0 in
+    /// use") — caught by `tmux_backend_reuses_the_session_for_a_second_window`.
+    ///
+    /// The trailing "sh" "-c" cmd is THREE separate argv elements, not `cmd`
+    /// alone: given a single string, tmux runs it through the pane's
+    /// `default-shell` option — the user's own login shell, fish for
+    /// example — not through a fixed POSIX shell. `cmd` is POSIX syntax
+    /// (`&&`, `"$(cat FILE)"`), the same shell-portability problem
+    /// `claude_script`'s callers solve for iTerm2 via `sh -c` (see
+    /// `terminal::iterm2::wrap_for_tab`); spelling out "sh" "-c" here makes
+    /// tmux exec `sh` directly via `execvp`, bypassing `default-shell`
+    /// entirely. Verified against a real tmux with `default-shell` pointed
+    /// at fish before fixing this.
+    fn new_window_args(session: &str, name: &str, cmd: &str) -> Vec<String> {
+        vec![
+            "new-window".into(),
+            "-t".into(),
+            format!("{session}:"),
+            "-n".into(),
+            name.into(),
+            "-P".into(),
+            "-F".into(),
+            "#{pane_id}".into(),
+            "--".into(),
+            "sh".into(),
+            "-c".into(),
+            cmd.into(),
+        ]
+    }
+
+    /// Args for creating the dedicated `SESSION` from scratch. `-d`:
+    /// detached, we are not attaching messreq itself. This also creates the
+    /// tmux server itself if none was running yet.
+    fn new_session_args(name: &str, cmd: &str) -> Vec<String> {
+        vec![
+            "new-session".into(),
+            "-d".into(),
+            "-s".into(),
+            SESSION.into(),
+            "-n".into(),
+            name.into(),
+            "-P".into(),
+            "-F".into(),
+            "#{pane_id}".into(),
+            "--".into(),
+            "sh".into(),
+            "-c".into(),
+            cmd.into(),
+        ]
+    }
+
     fn launch_failed() -> WorkError {
         WorkError::LaunchNotConfirmed {
             backend: "tmux",
@@ -87,58 +228,16 @@ impl TmuxBackend {
 
 impl TerminalBackend for TmuxBackend {
     fn open(&self, cmd: &str, _sid: &str, name: &str) -> Result<String, WorkError> {
-        // Either the session already has a window (`new-window`), or there is
-        // no session yet — no server running, or messreq's first launch —
-        // and `new-session -d` creates both the server and the session in
-        // one shot (`-d`: detached, we are not attaching messreq itself).
-        //
-        // The trailing "sh" "-c" cmd is THREE separate argv elements, not
-        // `cmd` alone: given a single string, tmux runs it through the
-        // pane's `default-shell` option — the user's own login shell, fish
-        // for example — not through a fixed POSIX shell. `cmd` is POSIX
-        // syntax (`&&`, `"$(cat FILE)"`), the same shell-portability problem
-        // `claude_script`'s callers solve for iTerm2 via `sh -c` (see
-        // `terminal::iterm2::wrap_for_tab`); spelling out "sh" "-c" here
-        // makes tmux exec `sh` directly via `execvp`, bypassing
-        // `default-shell` entirely. Verified against a real tmux with
-        // `default-shell` pointed at fish before fixing this.
-        let args: Vec<String> = if self.has_session() {
-            vec![
-                "new-window".into(),
-                // The trailing ":" targets the SESSION generally, letting
-                // tmux pick the next free window index. Without it, `-t
-                // SESSION` resolves to "the session's current window" and
-                // `new-window` tries to insert at that same index, which
-                // fails once a second window is opened ("index 0 in use") —
-                // caught by `tmux_backend_reuses_the_session_for_a_second_window`.
-                "-t".into(),
-                format!("{SESSION}:"),
-                "-n".into(),
-                name.into(),
-                "-P".into(),
-                "-F".into(),
-                "#{pane_id}".into(),
-                "--".into(),
-                "sh".into(),
-                "-c".into(),
-                cmd.into(),
-            ]
+        // Inside tmux, the session messreq is running in obviously already
+        // exists — we are literally running in it — so always new-window,
+        // right there. Outside tmux there is no current session to target,
+        // so fall back to the dedicated SESSION, created lazily.
+        let args: Vec<String> = if let Some(session) = self.current_session() {
+            Self::new_window_args(&session, name, cmd)
+        } else if self.has_session() {
+            Self::new_window_args(SESSION, name, cmd)
         } else {
-            vec![
-                "new-session".into(),
-                "-d".into(),
-                "-s".into(),
-                SESSION.into(),
-                "-n".into(),
-                name.into(),
-                "-P".into(),
-                "-F".into(),
-                "#{pane_id}".into(),
-                "--".into(),
-                "sh".into(),
-                "-c".into(),
-                cmd.into(),
-            ]
+            Self::new_session_args(name, cmd)
         };
 
         let out = self.tmux(&args).map_err(|_| Self::launch_failed())?;
@@ -153,12 +252,17 @@ impl TerminalBackend for TmuxBackend {
     }
 
     fn list_sessions(&self) -> Option<HashSet<String>> {
-        let out = self
-            .tmux(["list-panes", "-s", "-t", SESSION, "-F", "#{pane_id}"])
-            .ok()?;
+        // Server-wide (`-a`), not scoped to SESSION: `open` can now land
+        // windows in whichever session messreq itself is running in, so
+        // live panes are scattered across sessions messreq doesn't own.
+        // Bindings recorded before this fix point at panes inside the
+        // dedicated SESSION — those pane ids are still valid and still need
+        // to show up here, so the scope has to cover every session on the
+        // server, not just the one messreq manages by name.
+        let out = self.tmux(["list-panes", "-a", "-F", "#{pane_id}"]).ok()?;
         if !out.status.success() {
-            // Most commonly "session not found" — no session yet means no
-            // live panes, not a failure to report as a capability gap.
+            // Most commonly no tmux server running at all — no panes
+            // anywhere is not a failure to report as a capability gap.
             return Some(HashSet::new());
         }
         Some(
@@ -188,17 +292,28 @@ impl TerminalBackend for TmuxBackend {
 
     /// Make the pane's window the current one in its session, then — best
     /// effort — switch whichever tmux client is running this command's own
-    /// terminal to that session. `switch-client` fails harmlessly
-    /// ("no current client") when messreq is not itself running inside an
-    /// attached tmux client, e.g. launched from Terminal.app with the tmux
-    /// backend configured; that failure is expected and ignored, the same
-    /// way `focus_iterm`'s result is ignored elsewhere.
+    /// terminal to that session, but only when that is actually necessary.
+    /// If messreq itself is running inside the very session the target pane
+    /// lives in, `select-window` above already brought it into view for
+    /// whichever client is looking at that session — there is no session
+    /// boundary to cross. `switch-client` is for the fallback path (outside
+    /// tmux, or the target landed in some other session): best effort,
+    /// exactly as before — its "no current client" failure is expected and
+    /// ignored, the same way `focus_iterm`'s result is ignored elsewhere.
     fn focus(&self, session_id: &str) -> bool {
         let selected = self
             .tmux(["select-window", "-t", session_id])
             .map(|o| o.status.success())
             .unwrap_or(false);
-        let _ = self.tmux(["switch-client", "-t", session_id]);
+
+        let crosses_session = match self.current_session() {
+            Some(mine) => self.session_of(session_id).as_deref() != Some(mine.as_str()),
+            None => true,
+        };
+        if crosses_session {
+            let _ = self.tmux(["switch-client", "-t", session_id]);
+        }
+
         selected
     }
 }
@@ -213,11 +328,17 @@ mod tests {
     }
 
     #[test]
-    fn with_socket_targets_a_dedicated_socket() {
-        assert_eq!(
-            TmuxBackend::with_socket("messreq-test").socket,
-            Some("messreq-test".to_string())
-        );
+    fn with_socket_targets_a_dedicated_socket_and_no_own_pane() {
+        let backend = TmuxBackend::with_socket("messreq-test");
+        assert_eq!(backend.socket, Some("messreq-test".to_string()));
+        assert_eq!(backend.own_pane, None);
+    }
+
+    #[test]
+    fn with_socket_and_own_pane_sets_both() {
+        let backend = TmuxBackend::with_socket_and_own_pane("messreq-test", "%3");
+        assert_eq!(backend.socket, Some("messreq-test".to_string()));
+        assert_eq!(backend.own_pane, Some("%3".to_string()));
     }
 
     /// Exercises the real backend against a real tmux, but only on a
@@ -281,8 +402,9 @@ mod tests {
     /// Covers the branch the round-trip test above never takes: opening a
     /// second window once the `messreq` session already exists
     /// (`has_session()` true → `new-window`, not `new-session -d`). Both
-    /// panes must show up in `list_sessions`, scoped to the `messreq`
-    /// session only.
+    /// panes must show up in `list_sessions` — this throwaway socket has
+    /// nothing else on it, so seeing exactly these two proves the server-wide
+    /// `-a` scope isn't pulling in anything unexpected either.
     #[test]
     #[ignore = "spins up a real tmux server on a throwaway -L socket; run with `cargo test -- --ignored`"]
     fn tmux_backend_reuses_the_session_for_a_second_window() {
@@ -320,7 +442,7 @@ mod tests {
         assert_eq!(
             sessions.len(),
             2,
-            "only these two panes should be in messreq: {sessions:?}"
+            "only these two panes should exist on this throwaway socket: {sessions:?}"
         );
 
         let _ = Command::new("tmux")
@@ -407,6 +529,175 @@ mod tests {
         );
 
         let _ = std::fs::remove_file("/tmp/messreq-tmux-shell-test.out");
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+    }
+
+    /// messreq-e5t.4: the bug itself. When messreq is running inside tmux,
+    /// new windows must land in the session it is running in — the session
+    /// the user is attached to and actually looking at — not the dedicated
+    /// `SESSION` fallback, which is for when there is no current session to
+    /// target at all. Named "0" to match the bug report's own reproduction
+    /// (`0: 1 windows (attached)` vs. the window landing in `messreq:`
+    /// instead).
+    #[test]
+    #[ignore = "spins up a real tmux server on a throwaway -L socket; run with `cargo test -- --ignored`"]
+    fn tmux_backend_opens_windows_in_the_session_it_is_itself_running_in() {
+        const SOCKET: &str = "messreq-test-current-session";
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+
+        // Simulate "the user is attached to their own session, not
+        // messreq's dedicated one" — a session named "0", a stand-in pane
+        // for messreq itself to be "running inside".
+        let seed = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "new-session",
+                "-d",
+                "-s",
+                "0",
+                "-n",
+                "shell",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "sleep",
+                "300",
+            ])
+            .output()
+            .expect("seeding the user's own session should run");
+        assert!(
+            seed.status.success(),
+            "seeding the user's own session should succeed"
+        );
+        let own_pane = String::from_utf8_lossy(&seed.stdout).trim().to_string();
+
+        let backend = TmuxBackend::with_socket_and_own_pane(SOCKET, own_pane);
+
+        let pane_id = backend
+            .open("cat", "sid", "messreq-test-window")
+            .expect("open should succeed");
+
+        let has_dedicated = Command::new("tmux")
+            .args(["-L", SOCKET, "has-session", "-t", SESSION])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        assert!(
+            !has_dedicated,
+            "no dedicated '{SESSION}' session should have been created \
+             when a current session was available"
+        );
+
+        let window_session = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "display-message",
+                "-p",
+                "-t",
+                &pane_id,
+                "#{session_name}",
+            ])
+            .output()
+            .expect("display-message should run");
+        assert_eq!(
+            String::from_utf8_lossy(&window_session.stdout).trim(),
+            "0",
+            "the new window should have landed in the session the user is looking at, \
+             not a dedicated session nobody is attached to"
+        );
+
+        assert!(
+            backend.focus(&pane_id),
+            "select-window should succeed for a window in the current session"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+    }
+
+    /// messreq-e5t.4: bindings recorded before the fix point at panes
+    /// inside the dedicated `SESSION`; windows opened after the fix can
+    /// land in any session messreq itself happens to be running in.
+    /// `list_sessions` has to see panes regardless of which session they
+    /// ended up in, or the 🔨/💤 badges go stale for old bindings the
+    /// moment a single new-style window opens elsewhere.
+    #[test]
+    #[ignore = "spins up a real tmux server on a throwaway -L socket; run with `cargo test -- --ignored`"]
+    fn tmux_backend_list_sessions_sees_panes_across_every_session() {
+        const SOCKET: &str = "messreq-test-list-scope";
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+
+        // A pane in the dedicated SESSION, as if left over from before this
+        // fix shipped.
+        let legacy = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "new-session",
+                "-d",
+                "-s",
+                SESSION,
+                "-n",
+                "w",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "sleep",
+                "300",
+            ])
+            .output()
+            .expect("seeding the legacy session should run");
+        assert!(legacy.status.success());
+        let legacy_pane = String::from_utf8_lossy(&legacy.stdout).trim().to_string();
+
+        // A pane in some other session, as a post-fix window would be.
+        let other = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "new-session",
+                "-d",
+                "-s",
+                "0",
+                "-n",
+                "w",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "sleep",
+                "300",
+            ])
+            .output()
+            .expect("seeding the other session should run");
+        assert!(other.status.success());
+        let other_pane = String::from_utf8_lossy(&other.stdout).trim().to_string();
+
+        let backend = TmuxBackend::with_socket(SOCKET);
+        let sessions = backend
+            .list_sessions()
+            .expect("list_sessions should return Some");
+
+        assert!(
+            sessions.contains(&legacy_pane),
+            "pane in the dedicated session should still be seen: {sessions:?}"
+        );
+        assert!(
+            sessions.contains(&other_pane),
+            "pane in an unrelated session should also be seen: {sessions:?}"
+        );
+
         let _ = Command::new("tmux")
             .args(["-L", SOCKET, "kill-server"])
             .output();
