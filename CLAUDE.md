@@ -125,7 +125,7 @@ touching the code, and the failure lands on whoever pushes next. Pinning it is
 
 You can build while the TUI is running — cargo writes a new file and swaps it in, and the running process keeps living on the old inode (and therefore on the old code, until you restart it).
 
-`cargo test` runs 181 unit tests plus 5 that are `#[ignore]`d because they drive a real tmux server (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff, terminal backends (including automatic backend detection and the `MESSREQ_TERMINAL` override), and building and escaping the tab command. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
+`cargo test` runs 198 unit tests plus 7 that are `#[ignore]`d because they drive a real tmux server (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff, terminal backends (including automatic backend detection, the `MESSREQ_TERMINAL` override, and the tmux pane-vs-window placement decision — see `terminal::tmux`, messreq-e5t.7), and building and escaping the tab command. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
 
 ```bash
 messreq                    # TUI
@@ -142,6 +142,9 @@ MESSREQ_DEBUG=1 messreq …  # diagnostics for failed glab calls + `glab auth st
 MESSREQ_TERMINAL=tmux messreq …  # force the terminal backend for this run instead of
                                   # editing "terminal" in config.json and reverting it —
                                   # see `config::resolve_terminal_backend_with` (messreq-e5t.6)
+MESSREQ_OPEN_MODE=window messreq …  # tmux only: force new-window instead of the default
+                                     # pane split for this run — see `config::resolve_open_mode_with`
+                                     # and `terminal::tmux` (messreq-e5t.7)
 ```
 
 ## External dependencies and environment

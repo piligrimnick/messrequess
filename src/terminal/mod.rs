@@ -62,10 +62,17 @@ impl TerminalBackendName {
         }
     }
 
-    pub(crate) fn build(self) -> Box<dyn TerminalBackend> {
+    /// `open_mode` only matters for `Tmux` (see `OpenMode`'s doc) — `Iterm2`
+    /// ignores it, since iTerm2 tabs have no pane concept. Threaded in here
+    /// rather than resolved lazily inside `TmuxBackend::open` so an invalid
+    /// `"open_mode"`/`MESSREQ_OPEN_MODE` value surfaces as a `WorkError` at
+    /// the call site (`config::open_mode()?`, same shape as
+    /// `config::terminal_backend()?` above it), not swallowed by a `Default`
+    /// impl that cannot fail.
+    pub(crate) fn build(self, open_mode: OpenMode) -> Box<dyn TerminalBackend> {
         match self {
             TerminalBackendName::Iterm2 => Box::new(Iterm2Backend),
-            TerminalBackendName::Tmux => Box::new(TmuxBackend::default()),
+            TerminalBackendName::Tmux => Box::new(TmuxBackend::with_open_mode(open_mode)),
         }
     }
 
@@ -76,6 +83,48 @@ impl TerminalBackendName {
         match self {
             TerminalBackendName::Iterm2 => "iterm2",
             TerminalBackendName::Tmux => "tmux",
+        }
+    }
+}
+
+/// How `TmuxBackend::open` places a new session when messreq is itself
+/// running inside tmux (messreq-e5t.7). Meaningless outside tmux — there is
+/// no current window to split into, so that path always creates a window
+/// regardless of this setting (see the module doc on `tmux`) — and
+/// meaningless for the iTerm2 backend, which has no pane concept at all.
+///
+/// Resolved the same way as `TerminalBackendName`: `MESSREQ_OPEN_MODE` wins
+/// over the `"open_mode"` config key, which wins over the default (`Pane`,
+/// per the owner) — see `config::resolve_open_mode_with`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OpenMode {
+    /// Split a pane beside the dashboard instead of taking over a window —
+    /// the default. `TmuxBackend` lays every pane out with tmux's own
+    /// `main-vertical` layout, which keeps the dashboard at a fixed share of
+    /// the width no matter how many session panes are open (see the
+    /// `tmux` module doc and messreq-e5t.7's verified layout note).
+    Pane,
+    /// The pre-messreq-e5t.7 behavior: a new tmux window per session.
+    Window,
+}
+
+impl OpenMode {
+    /// Parse the raw `"open_mode"` config value / `MESSREQ_OPEN_MODE`.
+    /// Case-insensitive, mirroring `TerminalBackendName::parse`; `None` for
+    /// anything else so the caller can build a precise error.
+    pub(crate) fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_lowercase().as_str() {
+            "pane" => Some(Self::Pane),
+            "window" => Some(Self::Window),
+            _ => None,
+        }
+    }
+
+    /// The config-file spelling, mirroring `TerminalBackendName::as_str`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            OpenMode::Pane => "pane",
+            OpenMode::Window => "window",
         }
     }
 }
@@ -141,6 +190,27 @@ mod tests {
     fn as_str_round_trips_through_parse() {
         for name in [TerminalBackendName::Iterm2, TerminalBackendName::Tmux] {
             assert_eq!(TerminalBackendName::parse(name.as_str()), Some(name));
+        }
+    }
+
+    #[test]
+    fn open_mode_parse_is_case_insensitive_and_trims() {
+        assert_eq!(OpenMode::parse("pane"), Some(OpenMode::Pane));
+        assert_eq!(OpenMode::parse("Window"), Some(OpenMode::Window));
+        assert_eq!(OpenMode::parse(" PANE "), Some(OpenMode::Pane));
+    }
+
+    #[test]
+    fn open_mode_parse_rejects_anything_else() {
+        assert_eq!(OpenMode::parse("split"), None);
+        assert_eq!(OpenMode::parse(""), None);
+        assert_eq!(OpenMode::parse("-h"), None);
+    }
+
+    #[test]
+    fn open_mode_as_str_round_trips_through_parse() {
+        for mode in [OpenMode::Pane, OpenMode::Window] {
+            assert_eq!(OpenMode::parse(mode.as_str()), Some(mode));
         }
     }
 }

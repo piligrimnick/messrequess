@@ -47,6 +47,15 @@ Environment:
                          auto-detection. Unset or empty falls through to
                          them; an unrecognized value is an error, not a
                          silent fallback.
+  MESSREQ_OPEN_MODE      tmux only: how a session opens when messreq is
+                         itself running inside tmux — \"pane\" (the default:
+                         split beside the dashboard) or \"window\" (a new
+                         tmux window), case-insensitive — wins over the
+                         \"open_mode\" key in config.json. Unset or empty
+                         falls through to it, then to \"pane\"; an
+                         unrecognized value is an error, not a silent
+                         fallback. No effect outside tmux, which always
+                         opens a window.
 
 Configuration:
   ~/.config/messreq/config.json    maps a GitLab project path to its local

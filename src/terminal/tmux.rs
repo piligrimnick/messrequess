@@ -54,6 +54,44 @@
 //! a separate `send-keys Enter` delivered the text and submitted it
 //! reliably on every attempt tried, so this does not carry over the
 //! iTerm2 resend-loop either.
+//!
+//! ## Pane vs. window (messreq-e5t.7)
+//!
+//! Inside tmux, `open` no longer always runs `new-window`: under the default
+//! `OpenMode::Pane`, a session opens as a pane split beside whatever
+//! messreq's own pane is, instead of taking over a whole window and hiding
+//! the dashboard. `OpenMode::Window` keeps the pre-messreq-e5t.7 behavior.
+//! Outside tmux this distinction does not exist at all — there is no current
+//! window to split into — so that path (`has_session`/`new_session_args`
+//! below) always creates a window regardless of the configured mode; see
+//! `config::open_mode` for where the mode itself is resolved and validated.
+//!
+//! Where to split, and how "N sessions open" stays readable, is not
+//! hand-computed here. `open` always splits off messreq's own pane
+//! (`own_pane`) with a plain `split-window`, then immediately runs:
+//!
+//! ```text
+//! tmux set-window-option -t <target> main-pane-width <pane_width>%
+//! tmux select-layout -t <target> main-vertical
+//! ```
+//!
+//! tmux's `main-vertical` layout puts whichever pane has the lowest index
+//! (messreq's own pane — it is never re-created, so it keeps index 0) on the
+//! left at `main-pane-width`, and spreads every other pane evenly down a
+//! column on the right. Recalculating the whole window this way on every
+//! `open` is what makes "which pane do we split" a non-question: the
+//! dashboard keeps the same share of the width no matter how many session
+//! panes already exist, so unlike hand-computed percentages there is nothing
+//! to keep in sync as panes come and go. Verified against a real tmux (3.6)
+//! on a throwaway `-L` socket with three session panes before writing this —
+//! see `tmux_backend_lays_out_pane_sessions_with_main_vertical` — and against
+//! the owner's own tmux, at 200x50, in the messreq-e5t.7 issue notes.
+//!
+//! The two layout commands are best-effort (`let _ = ...`, like
+//! `focus`'s `switch-client` below): by the time they run, `split-window`
+//! has already produced a live pane and returned its id, so a layout hiccup
+//! must not fail the whole `open` — the session would just keep whatever
+//! geometry tmux gave it by default.
 
 use std::collections::HashSet;
 use std::ffi::OsStr;
@@ -61,7 +99,7 @@ use std::process::{Command, Output};
 
 use crate::error::WorkError;
 
-use super::TerminalBackend;
+use super::{OpenMode, TerminalBackend};
 
 /// The tmux session windows fall back to when messreq is running outside
 /// tmux and has no current session to target. Fixed rather than
@@ -82,6 +120,17 @@ pub(crate) struct TmuxBackend {
     /// it explicitly via `with_socket_and_own_pane` instead of mutating this
     /// process's real environment.
     own_pane: Option<String>,
+    /// How `open` places a session when messreq is running inside tmux
+    /// (messreq-e5t.7) — resolved once by `config::open_mode` and threaded
+    /// in via `TerminalBackendName::build`/`with_open_mode`, the same way
+    /// `terminal_backend()` is resolved and validated before `.build()` runs
+    /// rather than inside the backend itself: an invalid `"open_mode"` /
+    /// `MESSREQ_OPEN_MODE` value needs to surface as an error at the call
+    /// site, not get silently swallowed by a `Default` impl that cannot
+    /// fail. Irrelevant outside tmux (see the module doc); `#[cfg(test)]`
+    /// constructors set it explicitly instead of depending on this process's
+    /// real config file or `$MESSREQ_OPEN_MODE`.
+    open_mode: OpenMode,
 }
 
 impl Default for TmuxBackend {
@@ -91,30 +140,62 @@ impl Default for TmuxBackend {
             own_pane: std::env::var("TMUX_PANE")
                 .ok()
                 .filter(|pane| !pane.is_empty()),
+            // Overwritten by `with_open_mode` in production (`build` always
+            // supplies the resolved mode); harmless as a bare default for
+            // direct `TmuxBackend::default()` callers, since none exist
+            // outside this module's own tests.
+            open_mode: OpenMode::Pane,
         }
     }
 }
 
 impl TmuxBackend {
+    /// Production constructor used by `TerminalBackendName::build`: starts
+    /// from `Default` (real `$TMUX_PANE`, the user's own tmux socket) and
+    /// sets the already-resolved, already-validated `open_mode`.
+    pub(crate) fn with_open_mode(open_mode: OpenMode) -> Self {
+        TmuxBackend {
+            open_mode,
+            ..Default::default()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn with_socket(socket: impl Into<String>) -> Self {
         TmuxBackend {
             socket: Some(socket.into()),
             own_pane: None,
+            // Unused on this path (no own_pane means the outside-tmux
+            // branch, which never reads open_mode), and kept as `Window` so
+            // this constructor's pre-existing callers keep exercising
+            // exactly the behavior they did before messreq-e5t.7.
+            open_mode: OpenMode::Window,
         }
     }
 
     /// Test-only: simulates messreq itself running inside tmux, in the
     /// session that owns `pane`, without touching this process's real
-    /// `$TMUX_PANE`.
+    /// `$TMUX_PANE`. Defaults to `OpenMode::Window` so every pre-existing
+    /// caller keeps testing the pre-messreq-e5t.7 new-window behavior
+    /// unchanged; use `with_socket_own_pane_and_mode` to exercise pane mode.
     #[cfg(test)]
     pub(crate) fn with_socket_and_own_pane(
         socket: impl Into<String>,
         pane: impl Into<String>,
     ) -> Self {
+        Self::with_socket_own_pane_and_mode(socket, pane, OpenMode::Window)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_socket_own_pane_and_mode(
+        socket: impl Into<String>,
+        pane: impl Into<String>,
+        open_mode: OpenMode,
+    ) -> Self {
         TmuxBackend {
             socket: Some(socket.into()),
             own_pane: Some(pane.into()),
+            open_mode,
         }
     }
 
@@ -218,26 +299,106 @@ impl TmuxBackend {
         ]
     }
 
+    /// Args for splitting `target` (messreq's own pane) into a new pane
+    /// running `cmd`. `-h`: side-by-side — the direction hardly matters,
+    /// since `open` reflows the whole window with `select-layout
+    /// main-vertical` right after (see the module doc), but it is the
+    /// direction that shows something sane for the brief moment before that
+    /// call lands. Same `-P -F '#{pane_id}'` and `"sh" "-c" cmd` spelling as
+    /// `new_window_args`/`new_session_args`, for the same reasons.
+    fn split_pane_args(target: &str, cmd: &str) -> Vec<String> {
+        vec![
+            "split-window".into(),
+            "-h".into(),
+            "-t".into(),
+            target.into(),
+            "-P".into(),
+            "-F".into(),
+            "#{pane_id}".into(),
+            "--".into(),
+            "sh".into(),
+            "-c".into(),
+            cmd.into(),
+        ]
+    }
+
     fn launch_failed() -> WorkError {
         WorkError::LaunchNotConfirmed {
             backend: "tmux",
             tool_hint: "`tmux`",
         }
     }
+
+    /// Decide how `open` places a new session, given that messreq is itself
+    /// running inside tmux, in `session`, in `own_pane` — pure, so the
+    /// split-vs-window choice is unit-testable without a real tmux. Only
+    /// called from that branch of `open`; the outside-tmux branches
+    /// (`has_session`/`new_session_args`) never depend on `OpenMode` at all
+    /// (see the module doc).
+    fn decide_placement(own_pane: &str, session: &str, mode: OpenMode) -> Placement {
+        match mode {
+            OpenMode::Pane => Placement::SplitPane(own_pane.to_string()),
+            OpenMode::Window => Placement::NewWindow(session.to_string()),
+        }
+    }
+
+    /// Reflow the window so messreq's own pane keeps `width_pct`% of the
+    /// width and every session pane shares the rest evenly — tmux's
+    /// `main-vertical` layout, not hand-computed geometry. Best-effort: by
+    /// the time this runs, `split-window` already produced a live pane, so a
+    /// layout hiccup here must not fail the whole `open` — same rationale as
+    /// `focus`'s `switch-client` below. See the module doc for why no
+    /// arithmetic is needed here.
+    fn apply_main_vertical_layout(&self, target: &str, width_pct: u8) {
+        let _ = self.tmux([
+            "set-window-option",
+            "-t",
+            target,
+            "main-pane-width",
+            &format!("{width_pct}%"),
+        ]);
+        let _ = self.tmux(["select-layout", "-t", target, "main-vertical"]);
+    }
+}
+
+/// Where `open` places a new session — see `TmuxBackend::decide_placement`.
+#[derive(Debug, PartialEq, Eq)]
+enum Placement {
+    /// Inside tmux, `OpenMode::Pane`: split the pane named here (messreq's
+    /// own pane) and reflow with `main-vertical` afterward.
+    SplitPane(String),
+    /// Inside tmux with `OpenMode::Window`, or outside tmux with the
+    /// dedicated `SESSION` already running: a plain `new-window` in the
+    /// named session.
+    NewWindow(String),
+    /// Outside tmux, no dedicated `SESSION` yet: `new-session -d`.
+    NewSession,
 }
 
 impl TerminalBackend for TmuxBackend {
     fn open(&self, cmd: &str, _sid: &str, name: &str) -> Result<String, WorkError> {
         // Inside tmux, the session messreq is running in obviously already
-        // exists — we are literally running in it — so always new-window,
-        // right there. Outside tmux there is no current session to target,
-        // so fall back to the dedicated SESSION, created lazily.
-        let args: Vec<String> = if let Some(session) = self.current_session() {
-            Self::new_window_args(&session, name, cmd)
+        // exists — we are literally running in it — so split a pane there by
+        // default (or new-window, if configured), right where the user is
+        // looking. Outside tmux there is no current session to target, so
+        // fall back to the dedicated SESSION, created lazily; OpenMode does
+        // not apply on that path at all (see the module doc).
+        let placement = if let Some(session) = self.current_session() {
+            let own_pane = self
+                .own_pane
+                .as_deref()
+                .expect("current_session resolved implies own_pane is set");
+            Self::decide_placement(own_pane, &session, self.open_mode)
         } else if self.has_session() {
-            Self::new_window_args(SESSION, name, cmd)
+            Placement::NewWindow(SESSION.to_string())
         } else {
-            Self::new_session_args(name, cmd)
+            Placement::NewSession
+        };
+
+        let args: Vec<String> = match &placement {
+            Placement::SplitPane(target) => Self::split_pane_args(target, cmd),
+            Placement::NewWindow(session) => Self::new_window_args(session, name, cmd),
+            Placement::NewSession => Self::new_session_args(name, cmd),
         };
 
         let out = self.tmux(&args).map_err(|_| Self::launch_failed())?;
@@ -248,6 +409,11 @@ impl TerminalBackend for TmuxBackend {
         if pane_id.is_empty() {
             return Err(Self::launch_failed());
         }
+
+        if let Placement::SplitPane(target) = &placement {
+            self.apply_main_vertical_layout(target, crate::config::pane_width());
+        }
+
         Ok(pane_id)
     }
 
@@ -290,19 +456,36 @@ impl TerminalBackend for TmuxBackend {
         typed && submitted
     }
 
-    /// Make the pane's window the current one in its session, then — best
-    /// effort — switch whichever tmux client is running this command's own
-    /// terminal to that session, but only when that is actually necessary.
+    /// Make the pane's window the current one in its session, make the pane
+    /// itself the active one in that window, then — best effort — switch
+    /// whichever tmux client is running this command's own terminal to that
+    /// session, but only when that is actually necessary.
+    ///
+    /// Both `select-window` and `select-pane` are needed (messreq-e5t.7):
+    /// `select-window` alone is enough for a window-mode session, where the
+    /// target pane is the only pane in its window, but it does nothing for a
+    /// pane-mode session sharing a window with the dashboard and other
+    /// sessions — the window can already be the one on screen while a
+    /// *different* pane in it is active. `select-pane` is what actually
+    /// moves the active pane onto our target; running it unconditionally is
+    /// harmless for window-mode sessions too, since there it is a no-op
+    /// (already the only pane).
+    ///
     /// If messreq itself is running inside the very session the target pane
-    /// lives in, `select-window` above already brought it into view for
-    /// whichever client is looking at that session — there is no session
-    /// boundary to cross. `switch-client` is for the fallback path (outside
-    /// tmux, or the target landed in some other session): best effort,
-    /// exactly as before — its "no current client" failure is expected and
-    /// ignored, the same way `focus_iterm`'s result is ignored elsewhere.
+    /// lives in, `select-window`/`select-pane` above already brought it into
+    /// view for whichever client is looking at that session — there is no
+    /// session boundary to cross. `switch-client` is for the fallback path
+    /// (outside tmux, or the target landed in some other session): best
+    /// effort, exactly as before — its "no current client" failure is
+    /// expected and ignored, the same way `focus_iterm`'s result is ignored
+    /// elsewhere.
     fn focus(&self, session_id: &str) -> bool {
-        let selected = self
+        let window_selected = self
             .tmux(["select-window", "-t", session_id])
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        let pane_selected = self
+            .tmux(["select-pane", "-t", session_id])
             .map(|o| o.status.success())
             .unwrap_or(false);
 
@@ -314,7 +497,7 @@ impl TerminalBackend for TmuxBackend {
             let _ = self.tmux(["switch-client", "-t", session_id]);
         }
 
-        selected
+        window_selected && pane_selected
     }
 }
 
@@ -339,6 +522,54 @@ mod tests {
         let backend = TmuxBackend::with_socket_and_own_pane("messreq-test", "%3");
         assert_eq!(backend.socket, Some("messreq-test".to_string()));
         assert_eq!(backend.own_pane, Some("%3".to_string()));
+        assert_eq!(backend.open_mode, OpenMode::Window);
+    }
+
+    #[test]
+    fn with_socket_own_pane_and_mode_sets_the_mode_explicitly() {
+        let backend =
+            TmuxBackend::with_socket_own_pane_and_mode("messreq-test", "%3", OpenMode::Pane);
+        assert_eq!(backend.open_mode, OpenMode::Pane);
+    }
+
+    // --- decide_placement / split_pane_args: pure, no tmux needed
+    // (messreq-e5t.7) ---
+
+    #[test]
+    fn decide_placement_pane_mode_splits_messreqs_own_pane() {
+        assert_eq!(
+            TmuxBackend::decide_placement("%1", "0", OpenMode::Pane),
+            Placement::SplitPane("%1".to_string())
+        );
+    }
+
+    #[test]
+    fn decide_placement_window_mode_opens_a_window_in_the_current_session() {
+        assert_eq!(
+            TmuxBackend::decide_placement("%1", "0", OpenMode::Window),
+            Placement::NewWindow("0".to_string())
+        );
+    }
+
+    #[test]
+    fn split_pane_args_targets_own_pane_and_wraps_cmd_in_sh_c() {
+        let args = TmuxBackend::split_pane_args("%1", "echo hi");
+        assert_eq!(
+            args,
+            vec![
+                "split-window",
+                "-h",
+                "-t",
+                "%1",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "sh",
+                "-c",
+                "echo hi",
+            ]
+        );
     }
 
     /// Exercises the real backend against a real tmux, but only on a
@@ -696,6 +927,162 @@ mod tests {
         assert!(
             sessions.contains(&other_pane),
             "pane in an unrelated session should also be seen: {sessions:?}"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+    }
+
+    /// messreq-e5t.7: proves the owner's verified layout (issue notes,
+    /// tmux 3.6, 200x50, three sessions) end to end, through `open` itself
+    /// rather than by re-deriving the tmux commands by hand — `open_mode:
+    /// pane` plus `main-vertical` keeps the dashboard at exactly half the
+    /// width no matter how many session panes are open, with no arithmetic
+    /// of our own. Also manually verified against a real tmux before writing
+    /// this test (see messreq-e5t.7's implementation report).
+    #[test]
+    #[ignore = "spins up a real tmux server on a throwaway -L socket; run with `cargo test -- --ignored`"]
+    fn tmux_backend_lays_out_pane_sessions_with_main_vertical() {
+        const SOCKET: &str = "messreq-test-pane-layout";
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+
+        // Simulate messreq itself running inside its own pane, in a window
+        // sized to match the owner's verified note.
+        let seed = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "new-session",
+                "-d",
+                "-s",
+                "0",
+                "-n",
+                "dashboard",
+                "-x",
+                "200",
+                "-y",
+                "50",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "sleep",
+                "300",
+            ])
+            .output()
+            .expect("seeding messreq's own pane should run");
+        assert!(seed.status.success());
+        let own_pane = String::from_utf8_lossy(&seed.stdout).trim().to_string();
+
+        let backend = TmuxBackend::with_socket_own_pane_and_mode(SOCKET, &own_pane, OpenMode::Pane);
+
+        for i in 1..=3 {
+            backend
+                .open("sleep 300", &format!("sid-{i}"), &format!("session-{i}"))
+                .unwrap_or_else(|e| panic!("open #{i} should succeed: {e}"));
+        }
+
+        let panes = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "list-panes",
+                "-t",
+                "0",
+                "-F",
+                "#{pane_width}x#{pane_height} left=#{pane_left}",
+            ])
+            .output()
+            .expect("list-panes should run");
+        let layout = String::from_utf8_lossy(&panes.stdout).to_string();
+        let lines: Vec<&str> = layout.lines().collect();
+
+        assert_eq!(lines.len(), 4, "dashboard pane + 3 session panes: {layout}");
+        assert_eq!(
+            lines.iter().filter(|l| **l == "99x50 left=0").count(),
+            1,
+            "the dashboard pane should keep exactly half the width, full height: {layout}"
+        );
+        assert_eq!(
+            lines.iter().filter(|l| **l == "100x16 left=100").count(),
+            3,
+            "each session pane should share the right-hand column evenly: {layout}"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+    }
+
+    /// messreq-e5t.7: `focus` on a pane living in a *different* window from
+    /// messreq's own must select both that window and that pane — the
+    /// dashboard's own pane must not stay the active one.
+    #[test]
+    #[ignore = "spins up a real tmux server on a throwaway -L socket; run with `cargo test -- --ignored`"]
+    fn tmux_backend_focus_selects_the_pane_not_just_its_window() {
+        const SOCKET: &str = "messreq-test-focus-pane";
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "kill-server"])
+            .output();
+
+        let own_pane = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "new-session",
+                "-d",
+                "-s",
+                "0",
+                "-n",
+                "dashboard",
+                "-x",
+                "200",
+                "-y",
+                "50",
+                "-P",
+                "-F",
+                "#{pane_id}",
+                "--",
+                "sleep",
+                "300",
+            ])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .expect("seeding messreq's own pane should run");
+
+        let backend = TmuxBackend::with_socket_own_pane_and_mode(SOCKET, &own_pane, OpenMode::Pane);
+        let target = backend
+            .open("sleep 300", "sid", "session-1")
+            .expect("open should succeed");
+
+        // Right after opening, the newly split pane is already active — put
+        // focus back on the dashboard's own pane first, so `focus` below has
+        // something real to move away from.
+        let _ = Command::new("tmux")
+            .args(["-L", SOCKET, "select-pane", "-t", &own_pane])
+            .output();
+
+        assert!(backend.focus(&target), "focus should report success");
+
+        let active = Command::new("tmux")
+            .args([
+                "-L",
+                SOCKET,
+                "list-panes",
+                "-t",
+                "0",
+                "-F",
+                "#{pane_id} #{pane_active}",
+            ])
+            .output()
+            .expect("list-panes should run");
+        let active_text = String::from_utf8_lossy(&active.stdout);
+        assert!(
+            active_text.contains(&format!("{target} 1")),
+            "the target pane should be the active one after focus: {active_text}"
         );
 
         let _ = Command::new("tmux")

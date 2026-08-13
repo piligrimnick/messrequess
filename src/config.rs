@@ -9,7 +9,9 @@
 //!     "acme/backend": "~/src/backend",
 //!     "acme/frontend": "~/src/frontend"
 //!   },
-//!   "terminal": "tmux"
+//!   "terminal": "tmux",
+//!   "open_mode": "pane",
+//!   "pane_width": 50
 //! }
 //! ```
 //!
@@ -34,6 +36,28 @@
 //! same as a blank `"terminal"` string. Resolution order:
 //! `MESSREQ_TERMINAL` → `"terminal"` → detection.
 //!
+//! `open_mode` (messreq-e5t.7), tmux-only, decides how `TmuxBackend::open`
+//! places a session when messreq is itself running inside tmux: `"pane"`
+//! (the default) splits a pane beside the dashboard, `"window"` keeps the
+//! pre-messreq-e5t.7 behavior of a new tmux window per session. Same
+//! precedence shape as `terminal`: the `MESSREQ_OPEN_MODE` environment
+//! variable wins over the `"open_mode"` key, which wins over the default —
+//! there is no detection step here, since `Pane` is always a valid default
+//! (unlike a terminal backend, "how to place a pane" needs nothing installed
+//! beyond tmux itself). Outside tmux the setting does not apply at all: there
+//! is no current window to split into, so that path always opens a window —
+//! see the `terminal::tmux` module doc.
+//!
+//! `pane_width` (messreq-e5t.7), also tmux-only, is the percentage of the
+//! window's width tmux's `main-pane-width` reserves for the dashboard pane
+//! under `open_mode: "pane"` — default 50, clamped to 10..=90. Config-only,
+//! no environment override: unlike the backend or the open mode, there is no
+//! legitimate one-off reason to change it for a single run (nothing like the
+//! launchd notify agent needs to override it), and the dashboard's own
+//! snapshot layout is fixed-width (118 columns) — the knob exists so someone
+//! on a narrower terminal, where 50% would wrap the cards, can widen the
+//! dashboard's half without leaving it to guesswork.
+//!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
 //! is flat, so it maps onto JSON one to one.
@@ -43,7 +67,16 @@ use std::path::PathBuf;
 
 use crate::error::{TerminalValueSource, WorkError};
 use crate::model::MergeRequest;
-use crate::terminal::{detect_backend, BackendSource, TerminalBackendName};
+use crate::terminal::{detect_backend, BackendSource, OpenMode, TerminalBackendName};
+
+/// Default `pane_width` when the config key is absent — the layout the owner
+/// verified against a real tmux (messreq-e5t.7's notes): the dashboard keeps
+/// exactly half the window.
+const DEFAULT_PANE_WIDTH: u8 = 50;
+/// `pane_width` is clamped to this range regardless of what the config file
+/// says: below it the dashboard is too narrow to be readable, above it the
+/// session panes are.
+const PANE_WIDTH_RANGE: std::ops::RangeInclusive<u8> = 10..=90;
 
 #[derive(Default)]
 struct Config {
@@ -54,6 +87,13 @@ struct Config {
     /// as a string here so an unrecognized value can still be echoed back in
     /// the error instead of being swallowed during parsing.
     terminal: Option<String>,
+    /// Raw `"open_mode"` value, validated later by `open_mode` — same reason
+    /// as `terminal` above.
+    open_mode: Option<String>,
+    /// `"pane_width"`, already clamped to `PANE_WIDTH_RANGE` — there is no
+    /// invalid numeric value to report back to the user the way an unknown
+    /// backend/mode name is, so clamping silently is enough.
+    pane_width: Option<u8>,
 }
 
 fn home_dir() -> String {
@@ -114,6 +154,17 @@ impl Config {
                 .and_then(|s| s.as_str())
                 .filter(|s| !s.trim().is_empty())
                 .map(String::from),
+            open_mode: v
+                .get("open_mode")
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(String::from),
+            pane_width: v.get("pane_width").and_then(|n| n.as_u64()).map(|n| {
+                n.clamp(
+                    *PANE_WIDTH_RANGE.start() as u64,
+                    *PANE_WIDTH_RANGE.end() as u64,
+                ) as u8
+            }),
         }
     }
 
@@ -186,8 +237,8 @@ fn env_terminal() -> Option<String> {
     nonempty(std::env::var("MESSREQ_TERMINAL").ok())
 }
 
-/// Shared "blank counts as unset" filter, kept local since it is three lines
-/// and `env_terminal` is the only other caller.
+/// Shared "blank counts as unset" filter, kept local since it is small and
+/// `env_terminal`/`env_open_mode` are its only callers.
 fn nonempty(v: Option<String>) -> Option<String> {
     v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
@@ -197,6 +248,21 @@ fn resolve_terminal_backend(
     config_value: Option<&str>,
 ) -> Result<(TerminalBackendName, BackendSource), WorkError> {
     resolve_terminal_backend_with(env_value, config_value, detect_backend)
+}
+
+/// Builds the `WorkError` for an unrecognized `"terminal"`/`MESSREQ_TERMINAL`
+/// value — pulled out so both branches of `resolve_terminal_backend_with`
+/// share the exact same wording.
+fn unknown_terminal_backend(value: &str, source: TerminalValueSource) -> WorkError {
+    WorkError::UnknownConfigValue {
+        key: "terminal",
+        env_var: "MESSREQ_TERMINAL",
+        valid: "\"iterm2\" or \"tmux\"",
+        fallback: "let messreq detect one",
+        value: value.to_string(),
+        source,
+        config_path: config_path(),
+    }
 }
 
 /// The validation and detection dispatch, pulled out of
@@ -218,24 +284,73 @@ fn resolve_terminal_backend_with(
     if let Some(v) = env_value {
         return TerminalBackendName::parse(v)
             .map(|name| (name, BackendSource::Env))
-            .ok_or_else(|| WorkError::UnknownTerminalBackend {
-                value: v.to_string(),
-                source: TerminalValueSource::Env,
-                config_path: config_path(),
-            });
+            .ok_or_else(|| unknown_terminal_backend(v, TerminalValueSource::Env));
     }
     match config_value {
         Some(v) => TerminalBackendName::parse(v)
             .map(|name| (name, BackendSource::Configured))
-            .ok_or_else(|| WorkError::UnknownTerminalBackend {
-                value: v.to_string(),
-                source: TerminalValueSource::Config,
-                config_path: config_path(),
-            }),
+            .ok_or_else(|| unknown_terminal_backend(v, TerminalValueSource::Config)),
         None => detect().ok_or_else(|| WorkError::NoTerminalBackend {
             config_path: config_path(),
         }),
     }
+}
+
+/// Which mode `TmuxBackend::open` places a new session in, from
+/// `MESSREQ_OPEN_MODE` / the `"open_mode"` key in
+/// `~/.config/messreq/config.json` (messreq-e5t.7). Only meaningful inside
+/// tmux — see the module doc and `terminal::tmux`.
+pub(crate) fn open_mode() -> Result<OpenMode, WorkError> {
+    resolve_open_mode_with(
+        env_open_mode().as_deref(),
+        Config::load().open_mode.as_deref(),
+    )
+}
+
+/// `MESSREQ_OPEN_MODE`, trimmed; blank counts as unset, mirroring
+/// `env_terminal`.
+fn env_open_mode() -> Option<String> {
+    nonempty(std::env::var("MESSREQ_OPEN_MODE").ok())
+}
+
+fn unknown_open_mode(value: &str, source: TerminalValueSource) -> WorkError {
+    WorkError::UnknownConfigValue {
+        key: "open_mode",
+        env_var: "MESSREQ_OPEN_MODE",
+        valid: "\"pane\" or \"window\"",
+        fallback: "use the default (\"pane\")",
+        value: value.to_string(),
+        source,
+        config_path: config_path(),
+    }
+}
+
+/// Same shape as `resolve_terminal_backend_with`, but with no detection step:
+/// unlike a terminal backend, "pane" is always a valid answer with nothing
+/// extra to probe for, so the third input is a plain default instead of a
+/// closure.
+fn resolve_open_mode_with(
+    env_value: Option<&str>,
+    config_value: Option<&str>,
+) -> Result<OpenMode, WorkError> {
+    if let Some(v) = env_value {
+        return OpenMode::parse(v).ok_or_else(|| unknown_open_mode(v, TerminalValueSource::Env));
+    }
+    match config_value {
+        Some(v) => {
+            OpenMode::parse(v).ok_or_else(|| unknown_open_mode(v, TerminalValueSource::Config))
+        }
+        None => Ok(OpenMode::Pane),
+    }
+}
+
+/// The percentage of the tmux window's width the dashboard pane keeps under
+/// `open_mode: "pane"` — see the module doc for why this has no environment
+/// override. Infallible: an out-of-range or missing value silently becomes
+/// the clamped/default width rather than an error, since there is no typo to
+/// point at the way there is for a backend/mode name.
+pub(crate) fn pane_width() -> u8 {
+    Config::load().pane_width.unwrap_or(DEFAULT_PANE_WIDTH)
 }
 
 #[cfg(test)]
@@ -372,11 +487,14 @@ mod tests {
         })
         .unwrap_err();
         match err {
-            WorkError::UnknownTerminalBackend { value, source, .. } => {
+            WorkError::UnknownConfigValue {
+                key, value, source, ..
+            } => {
+                assert_eq!(key, "terminal");
                 assert_eq!(value, "kitty");
                 assert!(matches!(source, TerminalValueSource::Config));
             }
-            other => panic!("expected UnknownTerminalBackend, got {other:?}"),
+            other => panic!("expected UnknownConfigValue, got {other:?}"),
         }
     }
 
@@ -417,11 +535,14 @@ mod tests {
         })
         .unwrap_err();
         match err {
-            WorkError::UnknownTerminalBackend { value, source, .. } => {
+            WorkError::UnknownConfigValue {
+                key, value, source, ..
+            } => {
+                assert_eq!(key, "terminal");
                 assert_eq!(value, "kitty");
                 assert!(matches!(source, TerminalValueSource::Env));
             }
-            other => panic!("expected UnknownTerminalBackend, got {other:?}"),
+            other => panic!("expected UnknownConfigValue, got {other:?}"),
         }
     }
 
@@ -437,5 +558,92 @@ mod tests {
             nonempty(Some(" tmux ".to_string())),
             Some("tmux".to_string())
         );
+    }
+
+    #[test]
+    fn config_parses_the_open_mode_and_pane_width_keys() {
+        let cfg = Config::parse(r#"{"open_mode": "window", "pane_width": 60}"#);
+        assert_eq!(cfg.open_mode.as_deref(), Some("window"));
+        assert_eq!(cfg.pane_width, Some(60));
+    }
+
+    #[test]
+    fn no_open_mode_key_is_none_not_a_blank_string() {
+        assert_eq!(Config::parse(CFG).open_mode, None);
+        assert_eq!(Config::parse(r#"{"open_mode": "  "}"#).open_mode, None);
+    }
+
+    #[test]
+    fn pane_width_is_clamped_while_parsing() {
+        assert_eq!(
+            Config::parse(r#"{"pane_width": 5}"#).pane_width,
+            Some(*PANE_WIDTH_RANGE.start())
+        );
+        assert_eq!(
+            Config::parse(r#"{"pane_width": 99}"#).pane_width,
+            Some(*PANE_WIDTH_RANGE.end())
+        );
+        assert_eq!(Config::parse(CFG).pane_width, None);
+    }
+
+    #[test]
+    fn missing_open_mode_defaults_to_pane() {
+        // messreq-e5t.7: "pane" per the owner, and unlike the terminal
+        // backend there is no detection step to fall through to.
+        assert_eq!(resolve_open_mode_with(None, None).unwrap(), OpenMode::Pane);
+    }
+
+    #[test]
+    fn configured_open_mode_wins_over_the_default() {
+        assert_eq!(
+            resolve_open_mode_with(None, Some("window")).unwrap(),
+            OpenMode::Window
+        );
+    }
+
+    #[test]
+    fn env_open_mode_wins_over_the_config_key() {
+        assert_eq!(
+            resolve_open_mode_with(Some("window"), Some("pane")).unwrap(),
+            OpenMode::Window
+        );
+    }
+
+    #[test]
+    fn env_open_mode_is_case_insensitive_like_the_config_key() {
+        assert_eq!(
+            resolve_open_mode_with(Some("WINDOW"), None).unwrap(),
+            OpenMode::Window
+        );
+    }
+
+    #[test]
+    fn unknown_configured_open_mode_is_an_explicit_error() {
+        let err = resolve_open_mode_with(None, Some("split")).unwrap_err();
+        match err {
+            WorkError::UnknownConfigValue {
+                key, value, source, ..
+            } => {
+                assert_eq!(key, "open_mode");
+                assert_eq!(value, "split");
+                assert!(matches!(source, TerminalValueSource::Config));
+            }
+            other => panic!("expected UnknownConfigValue, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_env_open_mode_is_an_explicit_error() {
+        let err = resolve_open_mode_with(Some("split"), None).unwrap_err();
+        match err {
+            WorkError::UnknownConfigValue {
+                key, value, source, ..
+            } => {
+                assert_eq!(key, "open_mode");
+                assert_eq!(value, "split");
+                assert!(matches!(source, TerminalValueSource::Env));
+            }
+            other => panic!("expected UnknownConfigValue, got {other:?}"),
+        }
     }
 }

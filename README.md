@@ -148,7 +148,15 @@ MESSREQ_TERMINAL=tmux messreq …  # force the terminal backend for this run: "i
                                   # error. One-off testing without editing config.json —
                                   # and a way to pin a backend for the launchd notify
                                   # agent, via its own EnvironmentVariables block.
+MESSREQ_OPEN_MODE=window messreq …  # tmux only: how a session opens when messreq is
+                                     # itself running inside tmux — "pane" (default: split
+                                     # beside the dashboard) or "window" (new tmux window).
+                                     # Wins over the "open_mode" key in config.json; empty
+                                     # or unset falls through to it, then to "pane". No
+                                     # effect outside tmux, which always opens a window.
 ```
+
+Inside tmux, a session opens as a pane beside the dashboard by default — tmux's own `main-vertical` layout keeps the dashboard at a fixed share of the width (`"pane_width"` in config.json, default 50%) no matter how many session panes are open. Set `"open_mode": "window"` in config.json (or `MESSREQ_OPEN_MODE=window`) for the pre-messreq-e5t.7 behavior of a new tmux window per session.
 
 ## Notifications
 

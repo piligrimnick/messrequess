@@ -125,8 +125,25 @@ pub fn heartbeat_fresh(threshold_secs: u64) -> bool {
 pub(crate) fn iterm_session_ids() -> HashSet<String> {
     crate::config::terminal_backend()
         .ok()
-        .and_then(|backend| backend.build().list_sessions())
+        .and_then(|backend| {
+            backend
+                .build(open_mode_for_non_open_calls())
+                .list_sessions()
+        })
         .unwrap_or_default()
+}
+
+/// `TerminalBackendName::build` needs an `OpenMode` even for calls that
+/// never place a new session (`list_sessions`/`focus`/`send_line`) — it only
+/// affects `TmuxBackend::open`, so a broken `"open_mode"`/`MESSREQ_OPEN_MODE`
+/// value is swallowed here into the default rather than surfaced, the same
+/// way a broken `"terminal"` value already is on these paths (see
+/// `iterm_session_ids`'s doc above and `focus_iterm`/`deliver_to_live_session`
+/// below): there is no error channel on any of these, and the loud version
+/// of that error already fires from `open_session` the moment a session is
+/// actually opened.
+fn open_mode_for_non_open_calls() -> crate::terminal::OpenMode {
+    crate::config::open_mode().unwrap_or(crate::terminal::OpenMode::Pane)
 }
 
 fn uuid() -> String {
@@ -300,7 +317,13 @@ pub(crate) fn prune_prompts(work: &serde_json::Map<String, serde_json::Value>) {
 /// pick the backend, ask it to open `cmd`, and shape the result the same way
 /// regardless of which backend answered.
 fn open_session(cmd: &str, sid: String, name: String) -> Result<serde_json::Value, WorkError> {
-    let backend = crate::config::terminal_backend()?.build();
+    let backend_name = crate::config::terminal_backend()?;
+    // Resolved and validated here, same as `backend_name` above it — an
+    // unrecognized `"open_mode"`/`MESSREQ_OPEN_MODE` value must surface as
+    // the same kind of explicit error a typo'd `"terminal"` value already
+    // does, not get silently swallowed into a default (messreq-e5t.7).
+    let open_mode = crate::config::open_mode()?;
+    let backend = backend_name.build(open_mode);
     let session_id = backend.open(cmd, &sid, &name)?;
     Ok(json!({
         "claude_session": sid,
@@ -317,7 +340,9 @@ fn open_session(cmd: &str, sid: String, name: String) -> Result<serde_json::Valu
 /// session was opened.
 pub(crate) fn focus_iterm(session_id: &str) {
     if let Ok(backend) = crate::config::terminal_backend() {
-        let _ = backend.build().focus(session_id);
+        let _ = backend
+            .build(open_mode_for_non_open_calls())
+            .focus(session_id);
     }
 }
 
@@ -349,7 +374,9 @@ pub(crate) fn deliver_to_live_session(claude_session: &str, iterm_session: &str,
     let _ = std::fs::write(&file, prompt);
     let line = live_session_line(&file);
     if let Ok(backend) = crate::config::terminal_backend() {
-        let _ = backend.build().send_line(iterm_session, &line);
+        let _ = backend
+            .build(open_mode_for_non_open_calls())
+            .send_line(iterm_session, &line);
     }
 }
 
