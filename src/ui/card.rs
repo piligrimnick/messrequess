@@ -203,3 +203,64 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
         t
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truncate_leaves_short_strings_untouched() {
+        assert_eq!(truncate("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_leaves_strings_exactly_at_max_untouched() {
+        assert_eq!(truncate("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_cuts_ascii_and_appends_ellipsis() {
+        assert_eq!(truncate("hello world", 8), "hello w…");
+        assert_eq!(truncate("hello world", 8).chars().count(), 8);
+    }
+
+    #[test]
+    fn truncate_cuts_cyrillic_by_characters_not_bytes() {
+        // Every Cyrillic char here is 2 bytes in UTF-8, so a byte-based cut
+        // to `max` bytes would land mid-character. MR titles in this
+        // repository are routinely Cyrillic, so this is real coverage, not
+        // a hypothetical.
+        let title = "Добавить поддержку кириллицы в заголовках";
+        let out = truncate(title, 10);
+        assert_eq!(out.chars().count(), 10);
+        assert_eq!(out, "Добавить …");
+    }
+
+    #[test]
+    fn truncate_cuts_emoji_without_panicking_or_producing_mojibake() {
+        let title = "🚀🔥✅ release notes";
+        let out = truncate(title, 5);
+        assert_eq!(out.chars().count(), 5);
+        assert_eq!(out, "🚀🔥✅ …");
+        // Every char must still be valid — a byte-based slice through a
+        // multi-byte emoji would produce invalid UTF-8 and panic here.
+        assert!(out.chars().all(|c| c != '\u{FFFD}'));
+    }
+
+    #[test]
+    fn truncate_with_max_zero_on_nonempty_input_still_emits_the_ellipsis() {
+        // Boundary case, not necessarily desirable: `max: 0` still produces
+        // a 1-char string ("…"), one character over the requested max,
+        // because `max.saturating_sub(1)` floors at 0 rather than skipping
+        // the ellipsis entirely. `render_card` computes `title_w` as
+        // `inner.width.saturating_sub(1)`, so this is reachable on an
+        // extremely narrow terminal (inner width 0 or 1).
+        assert_eq!(truncate("non-empty", 0), "…");
+    }
+
+    #[test]
+    fn truncate_leaves_empty_string_untouched_regardless_of_max() {
+        assert_eq!(truncate("", 0), "");
+        assert_eq!(truncate("", 5), "");
+    }
+}

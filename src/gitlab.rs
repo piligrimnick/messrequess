@@ -669,4 +669,54 @@ host: gitlab.example.com
             ReviewState::Unknown
         );
     }
+
+    // ---- project_path_from_url ----
+
+    #[test]
+    fn project_path_from_url_extracts_a_simple_project() {
+        assert_eq!(
+            project_path_from_url("https://gitlab.com/group/proj/-/merge_requests/5"),
+            "group/proj"
+        );
+    }
+
+    #[test]
+    fn project_path_from_url_extracts_a_nested_group_path() {
+        assert_eq!(
+            project_path_from_url("https://gitlab.example.com/group/sub/proj/-/merge_requests/123"),
+            "group/sub/proj"
+        );
+    }
+
+    #[test]
+    fn project_path_from_url_extracts_a_deeply_nested_group_path() {
+        assert_eq!(
+            project_path_from_url("https://gitlab.com/a/b/c/d/proj/-/merge_requests/1"),
+            "a/b/c/d/proj"
+        );
+    }
+
+    #[test]
+    fn project_path_from_url_is_empty_without_the_merge_requests_marker() {
+        assert_eq!(project_path_from_url("https://gitlab.com/group/proj"), "");
+        assert_eq!(project_path_from_url(""), "");
+    }
+
+    #[test]
+    fn project_path_from_url_is_empty_without_a_scheme() {
+        assert_eq!(
+            project_path_from_url("gitlab.com/group/proj/-/merge_requests/1"),
+            ""
+        );
+    }
+
+    #[test]
+    fn project_path_from_url_is_empty_when_only_a_host_precedes_the_marker() {
+        // No slash after the host at all, so there is no project path to
+        // extract — not even an empty-group edge case.
+        assert_eq!(
+            project_path_from_url("https://gitlab.com/-/merge_requests/1"),
+            ""
+        );
+    }
 }
