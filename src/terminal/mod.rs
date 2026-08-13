@@ -7,10 +7,13 @@
 //! [`tmux::TmuxBackend`] are its two implementations.
 //!
 //! Selection reads the `"terminal"` key in `~/.config/messreq/config.json`
-//! (see `config::terminal_backend`). No key, or `"iterm2"`, means the
-//! existing iTerm2 behavior with no change at all — that is the owner's hard
-//! requirement, so trying tmux and going back stays a one-line edit. An
-//! unrecognized value is a `WorkError`, not a silent fallback.
+//! first (see `config::terminal_backend`) — an explicit `"iterm2"` or
+//! `"tmux"` always wins, so trying one and going back stays a one-line edit.
+//! No key at all falls through to `detect::detect_backend` (messreq-e5t.5):
+//! inside tmux, tmux; otherwise a working iTerm2; otherwise tmux as a
+//! universal fallback; otherwise a `WorkError` naming what to install. An
+//! unrecognized configured value is also a `WorkError`, not a silent
+//! fallback.
 //!
 //! `list_sessions`/`send_line`/`focus` return `Option`/`bool` instead of
 //! propagating an error, because they are read as capabilities, not fallible
@@ -22,6 +25,7 @@
 //! stays a `Result` — a backend that cannot open anything is not a terminal
 //! backend at all.
 
+mod detect;
 mod iterm2;
 mod tmux;
 
@@ -29,6 +33,7 @@ use std::collections::HashSet;
 
 use crate::error::WorkError;
 
+pub(crate) use detect::{detect_backend, BackendSource};
 pub(crate) use iterm2::Iterm2Backend;
 pub(crate) use tmux::TmuxBackend;
 
@@ -57,6 +62,16 @@ impl TerminalBackendName {
         match self {
             TerminalBackendName::Iterm2 => Box::new(Iterm2Backend),
             TerminalBackendName::Tmux => Box::new(TmuxBackend::default()),
+        }
+    }
+
+    /// The config-file spelling, for round-tripping into user-facing text
+    /// (`--plain`'s "why did it pick that" line) without a second table of
+    /// names to keep in sync with `parse`.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            TerminalBackendName::Iterm2 => "iterm2",
+            TerminalBackendName::Tmux => "tmux",
         }
     }
 }
@@ -116,5 +131,12 @@ mod tests {
         assert_eq!(TerminalBackendName::parse("kitty"), None);
         assert_eq!(TerminalBackendName::parse(""), None);
         assert_eq!(TerminalBackendName::parse("tmuxx"), None);
+    }
+
+    #[test]
+    fn as_str_round_trips_through_parse() {
+        for name in [TerminalBackendName::Iterm2, TerminalBackendName::Tmux] {
+            assert_eq!(TerminalBackendName::parse(name.as_str()), Some(name));
+        }
     }
 }
