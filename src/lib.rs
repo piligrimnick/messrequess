@@ -14,11 +14,12 @@
 //! turn it is, `time` formats ages. `forge` is the provider seam (`Forge` trait);
 //! `gitlab` is its GitLab implementation, going through `glab`. `config` says
 //! where the local checkouts are, `prompt` builds the text for Claude and `work`
-//! opens the session. `ui` draws the dashboard, `notify` runs the background pass.
-//! `cli` is the `--help`/unknown-flag argument parsing that has to work before
-//! any of that — before `glab` is ever called. `migrate` is a transitional shim
-//! carrying old `mrdash` state/config directories forward to their `messreq`
-//! names (messreq-c9j).
+//! opens the session — through the `terminal` backend seam (iTerm2 by default,
+//! tmux as an alternative, see `terminal`'s module doc). `ui` draws the
+//! dashboard, `notify` runs the background pass. `cli` is the `--help`/unknown-
+//! flag argument parsing that has to work before any of that — before `glab`
+//! is ever called. `migrate` is a transitional shim carrying old `mrdash`
+//! state/config directories forward to their `messreq` names (messreq-c9j).
 
 pub(crate) mod action;
 pub mod cli;
@@ -30,6 +31,7 @@ pub mod migrate;
 pub mod model;
 pub mod notify;
 pub mod prompt;
+pub(crate) mod terminal;
 pub(crate) mod time;
 pub mod ui;
 pub mod work;
