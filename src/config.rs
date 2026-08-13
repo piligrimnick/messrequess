@@ -18,9 +18,11 @@
 //! is the fallback for every other project; with a monorepo it is enough on
 //! its own.
 //!
-//! `terminal` picks the backend sessions open in — `"iterm2"` (the default;
-//! omit the key entirely for the same effect) or `"tmux"` — see
-//! `terminal_backend` and the `terminal` module.
+//! `terminal` picks the backend sessions open in — `"iterm2"` or `"tmux"`,
+//! and always wins when set. Omit the key entirely to let messreq detect one
+//! (messreq-e5t.5): tmux when messreq itself is running inside tmux,
+//! otherwise a working iTerm2, otherwise tmux as a universal fallback — see
+//! `terminal_backend` and `terminal::detect`.
 //!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
@@ -31,7 +33,7 @@ use std::path::PathBuf;
 
 use crate::error::WorkError;
 use crate::model::MergeRequest;
-use crate::terminal::TerminalBackendName;
+use crate::terminal::{detect_backend, BackendSource, TerminalBackendName};
 
 #[derive(Default)]
 struct Config {
@@ -143,25 +145,49 @@ pub(crate) fn work_dir_for_mr(mr: &MergeRequest) -> Result<String, WorkError> {
 }
 
 /// Which terminal backend to open sessions in, from the `"terminal"` key in
-/// `~/.config/messreq/config.json`.
+/// `~/.config/messreq/config.json`. Discards the "why" — use
+/// `resolved_terminal_backend` where that matters (`--plain`'s summary
+/// line).
 ///
-/// No key at all — the common case — resolves to iTerm2, today's only
-/// backend, so a config file written before messreq-ltu keeps behaving
-/// exactly as before. An unrecognized value (a typo, or a backend that does
-/// not exist yet) is an error rather than a silent fallback to iTerm2: going
-/// quiet there would hide the typo behind behavior that looks correct until
-/// the user notices sessions are not opening where they expected.
+/// An unrecognized configured value (a typo, or a backend that does not
+/// exist yet) is an error rather than a silent fallback: going quiet there
+/// would hide the typo behind behavior that looks correct until the user
+/// notices sessions are not opening where they expected.
 pub(crate) fn terminal_backend() -> Result<TerminalBackendName, WorkError> {
+    resolved_terminal_backend().map(|(name, _)| name)
+}
+
+/// Same as `terminal_backend`, but keeps `BackendSource` — where the answer
+/// came from — so callers that explain themselves to the user don't have to
+/// re-derive it.
+pub(crate) fn resolved_terminal_backend() -> Result<(TerminalBackendName, BackendSource), WorkError>
+{
     resolve_terminal_backend(Config::load().terminal.as_deref())
 }
 
-/// The validation itself, pulled out of `terminal_backend` so it can be unit
-/// tested without touching the real `~/.config/messreq/config.json`.
-fn resolve_terminal_backend(value: Option<&str>) -> Result<TerminalBackendName, WorkError> {
+fn resolve_terminal_backend(
+    value: Option<&str>,
+) -> Result<(TerminalBackendName, BackendSource), WorkError> {
+    resolve_terminal_backend_with(value, detect_backend)
+}
+
+/// The validation and detection dispatch, pulled out of
+/// `resolved_terminal_backend` so both are unit-testable without touching
+/// the real config file or the real environment: `value` stands in for the
+/// config key, `detect` stands in for reading `$TMUX`/`$TERM_PROGRAM` and
+/// probing `it2`/`tmux` for real (`terminal::detect_backend` in production).
+fn resolve_terminal_backend_with(
+    value: Option<&str>,
+    detect: impl FnOnce() -> Option<(TerminalBackendName, BackendSource)>,
+) -> Result<(TerminalBackendName, BackendSource), WorkError> {
     match value {
-        None => Ok(TerminalBackendName::Iterm2),
-        Some(v) => TerminalBackendName::parse(v).ok_or_else(|| WorkError::UnknownTerminalBackend {
-            value: v.to_string(),
+        Some(v) => TerminalBackendName::parse(v)
+            .map(|name| (name, BackendSource::Configured))
+            .ok_or_else(|| WorkError::UnknownTerminalBackend {
+                value: v.to_string(),
+                config_path: config_path(),
+            }),
+        None => detect().ok_or_else(|| WorkError::NoTerminalBackend {
             config_path: config_path(),
         }),
     }
@@ -249,34 +275,57 @@ mod tests {
     }
 
     #[test]
-    fn missing_terminal_key_resolves_to_iterm2() {
-        // No config change at all must reproduce today's only behavior —
-        // the owner's hard requirement for trying tmux to be reversible.
-        assert!(matches!(
-            resolve_terminal_backend(None),
-            Ok(TerminalBackendName::Iterm2)
-        ));
+    fn missing_terminal_key_falls_through_to_detection() {
+        // messreq-e5t.5: no config key defers to whatever `detect` decides,
+        // instead of a hardcoded default.
+        let resolved = resolve_terminal_backend_with(None, || {
+            Some((TerminalBackendName::Tmux, BackendSource::InsideTmux))
+        })
+        .unwrap();
+        assert_eq!(
+            resolved,
+            (TerminalBackendName::Tmux, BackendSource::InsideTmux)
+        );
     }
 
     #[test]
-    fn terminal_iterm2_resolves_explicitly_too() {
-        assert!(matches!(
-            resolve_terminal_backend(Some("iterm2")),
-            Ok(TerminalBackendName::Iterm2)
-        ));
+    fn missing_terminal_key_surfaces_no_terminal_backend_when_detection_finds_nothing() {
+        let err = resolve_terminal_backend_with(None, || None).unwrap_err();
+        assert!(matches!(err, WorkError::NoTerminalBackend { .. }));
     }
 
     #[test]
-    fn terminal_tmux_resolves_to_tmux() {
-        assert!(matches!(
-            resolve_terminal_backend(Some("tmux")),
-            Ok(TerminalBackendName::Tmux)
-        ));
+    fn terminal_iterm2_resolves_explicitly_and_skips_detection() {
+        // A configured value must win outright — `detect` here would panic
+        // if called, proving the explicit key short-circuits it.
+        let resolved = resolve_terminal_backend_with(Some("iterm2"), || {
+            panic!("detect should not run when the config key is set")
+        })
+        .unwrap();
+        assert_eq!(
+            resolved,
+            (TerminalBackendName::Iterm2, BackendSource::Configured)
+        );
+    }
+
+    #[test]
+    fn terminal_tmux_resolves_to_tmux_and_skips_detection() {
+        let resolved = resolve_terminal_backend_with(Some("tmux"), || {
+            panic!("detect should not run when the config key is set")
+        })
+        .unwrap();
+        assert_eq!(
+            resolved,
+            (TerminalBackendName::Tmux, BackendSource::Configured)
+        );
     }
 
     #[test]
     fn unknown_terminal_value_is_an_explicit_error_not_a_fallback() {
-        let err = resolve_terminal_backend(Some("kitty")).unwrap_err();
+        let err = resolve_terminal_backend_with(Some("kitty"), || {
+            panic!("detect should not run for an unrecognized configured value")
+        })
+        .unwrap_err();
         match err {
             WorkError::UnknownTerminalBackend { value, .. } => assert_eq!(value, "kitty"),
             other => panic!("expected UnknownTerminalBackend, got {other:?}"),

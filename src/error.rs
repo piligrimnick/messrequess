@@ -44,6 +44,11 @@ pub(crate) enum WorkError {
     /// must not silently fall back to iTerm2 — that would be a surprising
     /// default for someone who typo'd `"tmux"`.
     UnknownTerminalBackend { value: String, config_path: PathBuf },
+    /// No `"terminal"` key was set, and auto-detection (messreq-e5t.5) found
+    /// nothing usable: not inside tmux, no iTerm2 with a working Python API,
+    /// and no tmux on `$PATH` either. Distinct from `UnknownTerminalBackend`
+    /// — there is no typo to point at, only two things to install.
+    NoTerminalBackend { config_path: PathBuf },
 }
 
 impl fmt::Display for WorkError {
@@ -83,8 +88,18 @@ impl fmt::Display for WorkError {
             WorkError::UnknownTerminalBackend { value, config_path } => write!(
                 f,
                 "Unknown \"terminal\" backend \"{value}\" in {}.\n\n\
-                 Valid values: \"iterm2\" (the default — remove the key entirely for the \
-                 same effect) or \"tmux\".",
+                 Valid values: \"iterm2\" or \"tmux\" — or remove the key entirely to let \
+                 messreq detect one.",
+                config_path.display(),
+            ),
+            WorkError::NoTerminalBackend { config_path } => write!(
+                f,
+                "No terminal backend is available to open a Claude session.\n\n\
+                 messreq supports iTerm2 (its Python API must be enabled) and tmux.\n\n\
+                 Installing tmux makes messreq work from any terminal — it creates its own \
+                 session automatically, no configuration needed. Or enable iTerm2's Python \
+                 API in its preferences.\n\n\
+                 To pick one explicitly instead of relying on detection, set \"terminal\" in {}.",
                 config_path.display(),
             ),
         }
