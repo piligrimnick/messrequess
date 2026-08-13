@@ -122,6 +122,17 @@ If `~/.config/messreq/prompts/` still has `.txt` files from before this format c
 
 `Shift+Enter` needs a terminal that speaks the kitty keyboard protocol; `p` does the same thing everywhere. The menu offers four modes:
 
+### Mouse support (messreq-9td, off by default)
+
+Set `"mouse": true` in `config.json` (or `MESSREQ_MOUSE=1`, same precedence as `terminal`/`open_mode` — see [Other run modes](#other-run-modes)) to turn on the wheel and clicks:
+
+- the wheel moves the selection one card at a time, the same step `k`/`j` take — the list already scrolls by keeping the selection visible (`App::top` is recomputed from wherever it lands), so this reuses that instead of giving the viewport a scroll position of its own;
+- a left click selects the card under the pointer. It never opens or resumes a session — Enter stays the only way to do that. Spawning a session opens a tab/pane and starts a process, and a single accidental click is far too easy to trigger for that to be reversible, so there is no double-click handling either.
+
+Clicking a section header, the gap between cards, or below the last card does nothing rather than selecting a neighbor. While the prompt-mode menu or a popup is open, mouse events are swallowed instead of falling through to the list underneath.
+
+Enabling this makes the terminal claim the mouse (`EnableMouseCapture`), which is a real trade-off: the terminal's own click-drag text selection stops working, so copying an MR title or URL the usual way no longer does. That is why it defaults to **off** — most terminals still offer their own override while an app holds the mouse (in iTerm2, hold Option to select text anyway; tmux has its own copy mode), and turning it on is one config line away for anyone who wants it.
+
 - **Drive to approved** / **Surface review + narrow spots** — the default, and what plain `Enter` uses. Which of the two it is depends on whether the MR is yours.
 - **Only my threads** — just the unresolved threads you took part in.
 - **Deep review (full diff)**.
@@ -154,6 +165,10 @@ MESSREQ_OPEN_MODE=window messreq …  # tmux only: how a session opens when mess
                                      # Wins over the "open_mode" key in config.json; empty
                                      # or unset falls through to it, then to "pane". No
                                      # effect outside tmux, which always opens a window.
+MESSREQ_MOUSE=1 messreq …           # turn on wheel/click support for this run — see
+                                     # "Mouse support" above. Wins over the "mouse" key in
+                                     # config.json; empty, unset, or unrecognized falls
+                                     # through to it, then to off.
 ```
 
 Inside tmux, a session opens as a pane beside the dashboard by default — tmux's own `main-vertical` layout keeps the dashboard at a fixed share of the width (`"pane_width"` in config.json, default 50%) no matter how many session panes are open. Set `"open_mode": "window"` in config.json (or `MESSREQ_OPEN_MODE=window`) for the pre-messreq-e5t.7 behavior of a new tmux window per session.

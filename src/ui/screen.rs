@@ -102,6 +102,12 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     }
     f.render_widget(Paragraph::new(Line::from(summary)), chunks[0]);
 
+    // Rebuilt every frame below (one push per drawn card) — stale entries
+    // from a previous frame (a card that scrolled off, or the whole list
+    // when it's empty) must never survive to answer a click against rects
+    // that are no longer on screen.
+    app.card_rects.clear();
+
     // First load (no data yet) — a centered loader instead of an empty list.
     if app.items.is_empty() {
         let msg = if app.is_loading() {
@@ -198,6 +204,7 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
                 rect,
             ),
             Unit::Card(oi) => {
+                app.card_rects.push((*oi, rect));
                 let mr = &app.items[app.order[*oi]];
                 render_card(
                     f,
@@ -212,8 +219,13 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
         y = y.saturating_add(*h).saturating_add(GAP);
     }
 
+    let footer_text = if app.mouse_enabled {
+        " ↑↓/🖱 select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  r refresh  q quit "
+    } else {
+        " ↑↓ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  r refresh  q quit "
+    };
     let footer = Line::from(vec![Span::styled(
-        " ↑↓ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  r refresh  q quit ",
+        footer_text,
         Style::default().fg(Color::Black).bg(Color::Gray),
     )]);
     f.render_widget(Paragraph::new(footer), chunks[4]);
@@ -221,4 +233,96 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     render_menu(f, app);
     render_confirm(f, app);
     render_notice(f, app);
+}
+
+/// Which card (an index into `App::order`, the same unit `Unit::Card` above
+/// carries) a click at `(x, y)` landed on, if any. Pure arithmetic over the
+/// rects `ui()` recorded for the frame just drawn (`App::card_rects`) — no
+/// dependency on a live terminal, so it is tested directly rather than
+/// through a rendered frame.
+///
+/// A section header, the gap between cards, a point below the last visible
+/// card, or anything scrolled out of view all fall out for free: none of
+/// them ever get a rect pushed into `card_rects` in the first place, so no
+/// special-casing is needed here — a plain miss is the correct answer for
+/// all of them.
+pub(crate) fn hit_test(
+    card_rects: &[(usize, ratatui::layout::Rect)],
+    x: u16,
+    y: u16,
+) -> Option<usize> {
+    card_rects
+        .iter()
+        .find(|(_, r)| x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height)
+        .map(|(oi, _)| *oi)
+}
+
+#[cfg(test)]
+mod hit_test_tests {
+    use super::hit_test;
+    use ratatui::layout::Rect;
+
+    /// Three cards stacked as `ui()` would lay them out: `CARD_H = 4`,
+    /// `GAP = 1`, starting at y = 2 (past a header at y = 1) — order indices
+    /// 0, 1, 2.
+    fn three_cards() -> Vec<(usize, Rect)> {
+        vec![
+            (0, Rect::new(0, 2, 40, 4)),
+            (1, Rect::new(0, 7, 40, 4)),
+            (2, Rect::new(0, 12, 40, 4)),
+        ]
+    }
+
+    #[test]
+    fn click_inside_a_card_selects_it() {
+        let rects = three_cards();
+        assert_eq!(hit_test(&rects, 5, 3), Some(0));
+        assert_eq!(hit_test(&rects, 39, 5), Some(0)); // bottom-right corner, still inside
+        assert_eq!(hit_test(&rects, 5, 8), Some(1));
+        assert_eq!(hit_test(&rects, 5, 13), Some(2));
+    }
+
+    #[test]
+    fn click_on_a_header_selects_nothing() {
+        // Headers never get a rect pushed into card_rects — y = 1 (the "MY
+        // MRs" line above the first card at y = 2) is not covered by any
+        // entry.
+        let rects = three_cards();
+        assert_eq!(hit_test(&rects, 5, 1), None);
+    }
+
+    #[test]
+    fn click_in_the_gap_between_cards_selects_nothing() {
+        // y = 6 is the GAP row between the first card (rows 2..6) and the
+        // second (rows 7..11).
+        let rects = three_cards();
+        assert_eq!(hit_test(&rects, 5, 6), None);
+    }
+
+    #[test]
+    fn click_below_the_last_card_selects_nothing() {
+        let rects = three_cards();
+        assert_eq!(hit_test(&rects, 5, 20), None);
+    }
+
+    #[test]
+    fn click_while_scrolled_hits_the_card_now_drawn_at_the_top() {
+        // Once scrolled, card_rects only holds what is actually on screen —
+        // here order index 5 is drawn first, at the same rect order index 0
+        // occupied before scrolling.
+        let rects = vec![(5, Rect::new(0, 2, 40, 4)), (6, Rect::new(0, 7, 40, 4))];
+        assert_eq!(hit_test(&rects, 5, 3), Some(5));
+        assert_eq!(hit_test(&rects, 5, 8), Some(6));
+    }
+
+    #[test]
+    fn empty_card_rects_selects_nothing() {
+        assert_eq!(hit_test(&[], 5, 5), None);
+    }
+
+    #[test]
+    fn out_of_bounds_click_selects_nothing() {
+        let rects = three_cards();
+        assert_eq!(hit_test(&rects, 1000, 1000), None);
+    }
 }
