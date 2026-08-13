@@ -39,16 +39,35 @@ pub(crate) enum WorkError {
         backend: &'static str,
         tool_hint: &'static str,
     },
-    /// The `"terminal"` key in `~/.config/messreq/config.json` is set to
-    /// something other than a recognized backend name. An unrecognized value
-    /// must not silently fall back to iTerm2 — that would be a surprising
-    /// default for someone who typo'd `"tmux"`.
-    UnknownTerminalBackend { value: String, config_path: PathBuf },
+    /// The `"terminal"` key in `~/.config/messreq/config.json`, or the
+    /// `MESSREQ_TERMINAL` environment variable, is set to something other
+    /// than a recognized backend name. An unrecognized value must not
+    /// silently fall back to detection — that would be a surprising default
+    /// for someone who typo'd `"tmux"`. `source` says which of the two it
+    /// was, so the message points at the shell or at the config file, not
+    /// both.
+    UnknownTerminalBackend {
+        value: String,
+        source: TerminalValueSource,
+        config_path: PathBuf,
+    },
     /// No `"terminal"` key was set, and auto-detection (messreq-e5t.5) found
     /// nothing usable: not inside tmux, no iTerm2 with a working Python API,
     /// and no tmux on `$PATH` either. Distinct from `UnknownTerminalBackend`
     /// — there is no typo to point at, only two things to install.
     NoTerminalBackend { config_path: PathBuf },
+}
+
+/// Which input an invalid terminal-backend value came from — `MESSREQ_TERMINAL`
+/// wins over the config key (see `config::resolve_terminal_backend_with`), so
+/// a bad value needs to say which of the two to fix rather than pointing at
+/// both.
+#[derive(Debug)]
+pub(crate) enum TerminalValueSource {
+    /// The `MESSREQ_TERMINAL` environment variable.
+    Env,
+    /// The `"terminal"` key in `~/.config/messreq/config.json`.
+    Config,
 }
 
 impl fmt::Display for WorkError {
@@ -85,13 +104,28 @@ impl fmt::Display for WorkError {
                 "The {backend} session opened, but the command in it never confirmed the launch.\n\n\
                  Check that {tool_hint} and `claude` work."
             ),
-            WorkError::UnknownTerminalBackend { value, config_path } => write!(
-                f,
-                "Unknown \"terminal\" backend \"{value}\" in {}.\n\n\
-                 Valid values: \"iterm2\" or \"tmux\" — or remove the key entirely to let \
-                 messreq detect one.",
-                config_path.display(),
-            ),
+            WorkError::UnknownTerminalBackend {
+                value,
+                source,
+                config_path,
+            } => {
+                let (origin, unset_hint) = match source {
+                    TerminalValueSource::Env => (
+                        "the MESSREQ_TERMINAL environment variable".to_string(),
+                        "unset it".to_string(),
+                    ),
+                    TerminalValueSource::Config => (
+                        format!("the \"terminal\" key in {}", config_path.display()),
+                        "remove the key".to_string(),
+                    ),
+                };
+                write!(
+                    f,
+                    "Unknown \"terminal\" backend \"{value}\" from {origin}.\n\n\
+                     Valid values: \"iterm2\" or \"tmux\" — or {unset_hint} to let messreq \
+                     detect one.",
+                )
+            }
             WorkError::NoTerminalBackend { config_path } => write!(
                 f,
                 "No terminal backend is available to open a Claude session.\n\n\
@@ -107,3 +141,32 @@ impl fmt::Display for WorkError {
 }
 
 impl std::error::Error for WorkError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unknown_backend_from_env_points_at_the_shell_not_the_config_file() {
+        let err = WorkError::UnknownTerminalBackend {
+            value: "kitty".to_string(),
+            source: TerminalValueSource::Env,
+            config_path: PathBuf::from("/home/me/.config/messreq/config.json"),
+        };
+        let text = err.to_string();
+        assert!(text.contains("MESSREQ_TERMINAL environment variable"));
+        assert!(!text.contains("config.json"));
+    }
+
+    #[test]
+    fn unknown_backend_from_config_points_at_the_config_file() {
+        let err = WorkError::UnknownTerminalBackend {
+            value: "kitty".to_string(),
+            source: TerminalValueSource::Config,
+            config_path: PathBuf::from("/home/me/.config/messreq/config.json"),
+        };
+        let text = err.to_string();
+        assert!(text.contains("\"terminal\" key in /home/me/.config/messreq/config.json"));
+        assert!(!text.contains("MESSREQ_TERMINAL"));
+    }
+}

@@ -141,6 +141,13 @@ messreq --prompt <iid>     # print the prompt that Enter would send for this MR
 messreq --dump-prompts     # write the built-in prompt templates to ~/.config/messreq/prompts/
 messreq --notify           # one notification pass (see below)
 MESSREQ_DEBUG=1 messreq …  # diagnostics for failed glab calls, plus `glab auth status`
+MESSREQ_TERMINAL=tmux messreq …  # force the terminal backend for this run: "iterm2" or
+                                  # "tmux", case-insensitive. Wins over the "terminal" key
+                                  # in config.json and over auto-detection; empty or unset
+                                  # falls through to them, an unrecognized value is an
+                                  # error. One-off testing without editing config.json —
+                                  # and a way to pin a backend for the launchd notify
+                                  # agent, via its own EnvironmentVariables block.
 ```
 
 ## Notifications

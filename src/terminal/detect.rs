@@ -37,8 +37,12 @@ use super::TerminalBackendName;
 /// "why did it pick that" is answerable without reading the source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BackendSource {
+    /// The `MESSREQ_TERMINAL` environment variable (messreq-e5t.6) — always
+    /// wins, over both the config key and detection. A one-off override
+    /// that does not require editing and then remembering to revert a file.
+    Env,
     /// The explicit `"terminal"` key in `~/.config/messreq/config.json` —
-    /// always wins over detection below.
+    /// wins over detection below, but not over `Env`.
     Configured,
     /// `$TMUX` is set: messreq itself is running inside a tmux session.
     InsideTmux,
@@ -50,15 +54,23 @@ pub(crate) enum BackendSource {
 }
 
 impl BackendSource {
-    /// One line explaining the pick, for `--plain`.
-    pub(crate) fn explain(self) -> &'static str {
+    /// One line explaining the pick, for `--plain`. Takes the resolved name
+    /// too, because `Env`'s explanation echoes it back as
+    /// `MESSREQ_TERMINAL=<name>` — "why did it pick that" has to name the
+    /// exact variable and value, not just "an environment variable".
+    pub(crate) fn explain(self, name: TerminalBackendName) -> String {
         match self {
-            BackendSource::Configured => "the \"terminal\" key in config.json",
-            BackendSource::InsideTmux => "$TMUX is set — messreq is running inside tmux",
-            BackendSource::Iterm2Detected => {
-                "TERM_PROGRAM=iTerm.app and iTerm2's Python API answered"
+            BackendSource::Env => format!("MESSREQ_TERMINAL={}", name.as_str()),
+            BackendSource::Configured => "the \"terminal\" key in config.json".to_string(),
+            BackendSource::InsideTmux => {
+                "$TMUX is set — messreq is running inside tmux".to_string()
             }
-            BackendSource::TmuxFallback => "no working iTerm2 detected; tmux is installed",
+            BackendSource::Iterm2Detected => {
+                "TERM_PROGRAM=iTerm.app and iTerm2's Python API answered".to_string()
+            }
+            BackendSource::TmuxFallback => {
+                "no working iTerm2 detected; tmux is installed".to_string()
+            }
         }
     }
 }

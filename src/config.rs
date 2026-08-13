@@ -19,10 +19,20 @@
 //! its own.
 //!
 //! `terminal` picks the backend sessions open in — `"iterm2"` or `"tmux"`,
-//! and always wins when set. Omit the key entirely to let messreq detect one
-//! (messreq-e5t.5): tmux when messreq itself is running inside tmux,
-//! otherwise a working iTerm2, otherwise tmux as a universal fallback — see
-//! `terminal_backend` and `terminal::detect`.
+//! and wins over detection when set. Omit the key entirely to let messreq
+//! detect one (messreq-e5t.5): tmux when messreq itself is running inside
+//! tmux, otherwise a working iTerm2, otherwise tmux as a universal fallback
+//! — see `terminal_backend` and `terminal::detect`.
+//!
+//! The `MESSREQ_TERMINAL` environment variable (messreq-e5t.6) overrides
+//! both: `MESSREQ_TERMINAL=tmux messreq` forces a backend for one run without
+//! touching config.json and remembering to revert it — useful for the
+//! launchd notify agent too, which has its own `EnvironmentVariables` block
+//! and no flag of its own to pin a backend. Same values as the `"terminal"`
+//! key, same case-insensitive matching, and an empty value
+//! (`MESSREQ_TERMINAL=`, an exported-but-unset variable) counts as unset,
+//! same as a blank `"terminal"` string. Resolution order:
+//! `MESSREQ_TERMINAL` → `"terminal"` → detection.
 //!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
@@ -31,7 +41,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::error::WorkError;
+use crate::error::{TerminalValueSource, WorkError};
 use crate::model::MergeRequest;
 use crate::terminal::{detect_backend, BackendSource, TerminalBackendName};
 
@@ -162,29 +172,64 @@ pub(crate) fn terminal_backend() -> Result<TerminalBackendName, WorkError> {
 /// re-derive it.
 pub(crate) fn resolved_terminal_backend() -> Result<(TerminalBackendName, BackendSource), WorkError>
 {
-    resolve_terminal_backend(Config::load().terminal.as_deref())
+    resolve_terminal_backend(
+        env_terminal().as_deref(),
+        Config::load().terminal.as_deref(),
+    )
+}
+
+/// `MESSREQ_TERMINAL`, trimmed; blank (`MESSREQ_TERMINAL=`, what an
+/// exported-but-unset variable looks like) is treated as unset rather than
+/// an empty value to reject — same rule `Config::parse` already applies to
+/// the `"terminal"` key.
+fn env_terminal() -> Option<String> {
+    nonempty(std::env::var("MESSREQ_TERMINAL").ok())
+}
+
+/// Shared "blank counts as unset" filter, kept local since it is three lines
+/// and `env_terminal` is the only other caller.
+fn nonempty(v: Option<String>) -> Option<String> {
+    v.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 fn resolve_terminal_backend(
-    value: Option<&str>,
+    env_value: Option<&str>,
+    config_value: Option<&str>,
 ) -> Result<(TerminalBackendName, BackendSource), WorkError> {
-    resolve_terminal_backend_with(value, detect_backend)
+    resolve_terminal_backend_with(env_value, config_value, detect_backend)
 }
 
 /// The validation and detection dispatch, pulled out of
-/// `resolved_terminal_backend` so both are unit-testable without touching
-/// the real config file or the real environment: `value` stands in for the
-/// config key, `detect` stands in for reading `$TMUX`/`$TERM_PROGRAM` and
-/// probing `it2`/`tmux` for real (`terminal::detect_backend` in production).
+/// `resolved_terminal_backend` so it is unit-testable without touching the
+/// real config file or the real environment: `env_value`/`config_value`
+/// stand in for `MESSREQ_TERMINAL`/the config key, `detect` stands in for
+/// reading `$TMUX`/`$TERM_PROGRAM` and probing `it2`/`tmux` for real
+/// (`terminal::detect_backend` in production).
+///
+/// `env_value` wins outright when present, same as `config_value` used to on
+/// its own — it does not merely change the default, it short-circuits
+/// `config_value` and `detect` exactly the way `config_value` already
+/// short-circuits `detect`.
 fn resolve_terminal_backend_with(
-    value: Option<&str>,
+    env_value: Option<&str>,
+    config_value: Option<&str>,
     detect: impl FnOnce() -> Option<(TerminalBackendName, BackendSource)>,
 ) -> Result<(TerminalBackendName, BackendSource), WorkError> {
-    match value {
+    if let Some(v) = env_value {
+        return TerminalBackendName::parse(v)
+            .map(|name| (name, BackendSource::Env))
+            .ok_or_else(|| WorkError::UnknownTerminalBackend {
+                value: v.to_string(),
+                source: TerminalValueSource::Env,
+                config_path: config_path(),
+            });
+    }
+    match config_value {
         Some(v) => TerminalBackendName::parse(v)
             .map(|name| (name, BackendSource::Configured))
             .ok_or_else(|| WorkError::UnknownTerminalBackend {
                 value: v.to_string(),
+                source: TerminalValueSource::Config,
                 config_path: config_path(),
             }),
         None => detect().ok_or_else(|| WorkError::NoTerminalBackend {
@@ -278,7 +323,7 @@ mod tests {
     fn missing_terminal_key_falls_through_to_detection() {
         // messreq-e5t.5: no config key defers to whatever `detect` decides,
         // instead of a hardcoded default.
-        let resolved = resolve_terminal_backend_with(None, || {
+        let resolved = resolve_terminal_backend_with(None, None, || {
             Some((TerminalBackendName::Tmux, BackendSource::InsideTmux))
         })
         .unwrap();
@@ -290,7 +335,7 @@ mod tests {
 
     #[test]
     fn missing_terminal_key_surfaces_no_terminal_backend_when_detection_finds_nothing() {
-        let err = resolve_terminal_backend_with(None, || None).unwrap_err();
+        let err = resolve_terminal_backend_with(None, None, || None).unwrap_err();
         assert!(matches!(err, WorkError::NoTerminalBackend { .. }));
     }
 
@@ -298,7 +343,7 @@ mod tests {
     fn terminal_iterm2_resolves_explicitly_and_skips_detection() {
         // A configured value must win outright — `detect` here would panic
         // if called, proving the explicit key short-circuits it.
-        let resolved = resolve_terminal_backend_with(Some("iterm2"), || {
+        let resolved = resolve_terminal_backend_with(None, Some("iterm2"), || {
             panic!("detect should not run when the config key is set")
         })
         .unwrap();
@@ -310,7 +355,7 @@ mod tests {
 
     #[test]
     fn terminal_tmux_resolves_to_tmux_and_skips_detection() {
-        let resolved = resolve_terminal_backend_with(Some("tmux"), || {
+        let resolved = resolve_terminal_backend_with(None, Some("tmux"), || {
             panic!("detect should not run when the config key is set")
         })
         .unwrap();
@@ -322,13 +367,75 @@ mod tests {
 
     #[test]
     fn unknown_terminal_value_is_an_explicit_error_not_a_fallback() {
-        let err = resolve_terminal_backend_with(Some("kitty"), || {
+        let err = resolve_terminal_backend_with(None, Some("kitty"), || {
             panic!("detect should not run for an unrecognized configured value")
         })
         .unwrap_err();
         match err {
-            WorkError::UnknownTerminalBackend { value, .. } => assert_eq!(value, "kitty"),
+            WorkError::UnknownTerminalBackend { value, source, .. } => {
+                assert_eq!(value, "kitty");
+                assert!(matches!(source, TerminalValueSource::Config));
+            }
             other => panic!("expected UnknownTerminalBackend, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn env_override_wins_over_the_config_key() {
+        // messreq-e5t.6: MESSREQ_TERMINAL is the outermost input — it must
+        // win even when the config key disagrees, not just when the config
+        // key is absent.
+        let resolved = resolve_terminal_backend_with(Some("tmux"), Some("iterm2"), || {
+            panic!("detect should not run when MESSREQ_TERMINAL is set")
+        })
+        .unwrap();
+        assert_eq!(resolved, (TerminalBackendName::Tmux, BackendSource::Env));
+    }
+
+    #[test]
+    fn env_override_wins_over_detection() {
+        let resolved = resolve_terminal_backend_with(Some("tmux"), None, || {
+            panic!("detect should not run when MESSREQ_TERMINAL is set")
+        })
+        .unwrap();
+        assert_eq!(resolved, (TerminalBackendName::Tmux, BackendSource::Env));
+    }
+
+    #[test]
+    fn env_value_is_case_insensitive_like_the_config_key() {
+        let resolved = resolve_terminal_backend_with(Some("TMUX"), None, || {
+            panic!("detect should not run when MESSREQ_TERMINAL is set")
+        })
+        .unwrap();
+        assert_eq!(resolved, (TerminalBackendName::Tmux, BackendSource::Env));
+    }
+
+    #[test]
+    fn unknown_env_value_is_an_explicit_error_not_a_silent_fallback() {
+        let err = resolve_terminal_backend_with(Some("kitty"), None, || {
+            panic!("detect should not run for an unrecognized MESSREQ_TERMINAL value")
+        })
+        .unwrap_err();
+        match err {
+            WorkError::UnknownTerminalBackend { value, source, .. } => {
+                assert_eq!(value, "kitty");
+                assert!(matches!(source, TerminalValueSource::Env));
+            }
+            other => panic!("expected UnknownTerminalBackend, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn nonempty_treats_blank_as_unset() {
+        // The pure filter behind `env_terminal`, tested directly on plain
+        // strings rather than by mutating the real MESSREQ_TERMINAL — env
+        // vars are process-global and racy to flip from tests.
+        assert_eq!(nonempty(Some("  ".to_string())), None);
+        assert_eq!(nonempty(Some(String::new())), None);
+        assert_eq!(nonempty(None), None);
+        assert_eq!(
+            nonempty(Some(" tmux ".to_string())),
+            Some("tmux".to_string())
+        );
     }
 }
