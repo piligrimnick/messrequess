@@ -56,6 +56,11 @@ Environment:
                          unrecognized value is an error, not a silent
                          fallback. No effect outside tmux, which always
                          opens a window.
+  MESSREQ_MOUSE          \"1\"/\"true\"/\"yes\"/\"on\" or
+                         \"0\"/\"false\"/\"no\"/\"off\", case-insensitive —
+                         wins over the \"mouse\" key in config.json. Unset,
+                         empty, or unrecognized falls through to it, then to
+                         off. See \"mouse support\" below.
 
 Configuration:
   ~/.config/messreq/config.json    maps a GitLab project path to its local
@@ -74,6 +79,17 @@ TUI key bindings:
   d                toggle draft MRs
   r                refresh
   q, Esc           quit
+
+Mouse support (off by default):
+  Set \"mouse\": true in config.json (or MESSREQ_MOUSE=1) to turn on the
+  wheel and clicks: the wheel moves the selection one card at a time, and a
+  left click selects the card under the pointer. A click only ever selects —
+  it never opens or resumes a session, Enter still does that — and there is
+  no double-click handling. Off by default because enabling it makes the
+  terminal claim the mouse, which takes away the terminal's own click-drag
+  text selection — a real cost in a dashboard full of MR titles and URLs.
+  Most terminals still offer their own override while an app holds the
+  mouse (in iTerm2, hold Option to select text anyway).
 ";
 
 /// Usage banner printed to stderr for an unrecognized flag.

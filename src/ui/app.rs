@@ -5,6 +5,7 @@ use std::collections::HashSet;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Instant;
 
+use ratatui::layout::Rect;
 use serde_json::json;
 
 use super::menu::MenuItem;
@@ -65,6 +66,15 @@ pub(crate) struct App {
     pub(crate) notice: Option<String>,
     // the terminal tells Shift+Enter apart (kitty protocol)
     pub(crate) kbd_enhanced: bool,
+    // whether the TUI claimed the mouse this run (messreq-9td) — off by
+    // default (see `config` module doc for the copy-paste trade-off), read
+    // once at startup since it never changes mid-run
+    pub(crate) mouse_enabled: bool,
+    // card rects drawn for the frame just rendered, keyed by their index into
+    // `order` — `screen::ui` repopulates this every frame; hit-testing a
+    // click (`screen::hit_test`) reads it back. Empty entries (headers, gaps,
+    // space below the last card) are simply absent, not zero-sized rects.
+    pub(crate) card_rects: Vec<(usize, Rect)>,
     // Every method that would otherwise write to ~/.local/state/messreq/
     // (`mark_seen`, `mark_all_seen`, `prune_state`) checks this first and
     // skips the write instead — see `new_read_only`. Keeping the guard next
@@ -112,6 +122,8 @@ impl App {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            mouse_enabled: crate::config::mouse_enabled(),
+            card_rects: vec![],
             read_only,
         };
         app.start_reload();
@@ -386,6 +398,8 @@ mod tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            mouse_enabled: false,
+            card_rects: vec![],
             read_only: false,
         }
     }

@@ -227,6 +227,8 @@ mod tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            mouse_enabled: false,
+            card_rects: vec![],
             read_only: false,
         }
     }

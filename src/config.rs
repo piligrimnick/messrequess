@@ -11,7 +11,8 @@
 //!   },
 //!   "terminal": "tmux",
 //!   "open_mode": "pane",
-//!   "pane_width": 50
+//!   "pane_width": 50,
+//!   "mouse": false
 //! }
 //! ```
 //!
@@ -58,6 +59,23 @@
 //! on a narrower terminal, where 50% would wrap the cards, can widen the
 //! dashboard's half without leaving it to guesswork.
 //!
+//! `mouse` (messreq-9td) turns on scroll/click support in the TUI: the wheel
+//! moves the selection and a left click selects the card under the pointer
+//! (never opens or resumes a session — Enter stays the only way to do that,
+//! see `ui::mod`). It defaults to **off**. Enabling it makes crossterm claim
+//! the mouse for the whole terminal (`EnableMouseCapture`), which is a real
+//! trade-off: the terminal's own click-drag text selection stops working, so
+//! copying an MR title or URL the usual way is no longer possible. Off by
+//! default keeps that copy-paste path intact for everyone who has not asked
+//! for mouse support; the terminal's own override still works either way —
+//! in iTerm2, holding Option selects text even while an app has the mouse.
+//! Same precedence shape as `terminal`/`open_mode`: `MESSREQ_MOUSE` (`"1"`,
+//! `"true"`, `"yes"`, `"on"` / `"0"`, `"false"`, `"no"`, `"off"`,
+//! case-insensitive) wins over the `"mouse"` key, which wins over the
+//! default. Unlike `terminal`/`open_mode`, an unrecognized value is not an
+//! error — same reasoning as `pane_width`: there is no fixed vocabulary to
+//! typo, so it is treated as unset rather than rejected.
+//!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
 //! is flat, so it maps onto JSON one to one.
@@ -94,6 +112,11 @@ struct Config {
     /// invalid numeric value to report back to the user the way an unknown
     /// backend/mode name is, so clamping silently is enough.
     pane_width: Option<u8>,
+    /// `"mouse"` — unlike `terminal`/`open_mode` there is no fixed
+    /// vocabulary to validate, so a non-boolean value simply parses as
+    /// `None` (falls through to the default) rather than being kept around
+    /// to report back as a typo.
+    mouse: Option<bool>,
 }
 
 fn home_dir() -> String {
@@ -165,6 +188,7 @@ impl Config {
                     *PANE_WIDTH_RANGE.end() as u64,
                 ) as u8
             }),
+            mouse: v.get("mouse").and_then(|b| b.as_bool()),
         }
     }
 
@@ -351,6 +375,34 @@ fn resolve_open_mode_with(
 /// point at the way there is for a backend/mode name.
 pub(crate) fn pane_width() -> u8 {
     Config::load().pane_width.unwrap_or(DEFAULT_PANE_WIDTH)
+}
+
+/// Whether the TUI should claim the mouse (`EnableMouseCapture`) — see the
+/// module doc for the copy-paste trade-off this decides. Off by default.
+pub(crate) fn mouse_enabled() -> bool {
+    resolve_mouse_enabled(env_mouse(), Config::load().mouse)
+}
+
+/// `MESSREQ_MOUSE`, parsed the same way the `"mouse"` config key is: an
+/// unrecognized or blank value is unset, not an error (see the module doc).
+fn env_mouse() -> Option<bool> {
+    nonempty(std::env::var("MESSREQ_MOUSE").ok()).and_then(|v| parse_bool(&v))
+}
+
+/// Shared bool vocabulary for `MESSREQ_MOUSE`, case-insensitive.
+fn parse_bool(v: &str) -> Option<bool> {
+    match v.to_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
+/// Pulled out of `mouse_enabled` for the same reason
+/// `resolve_terminal_backend_with` is pulled out of `resolved_terminal_backend`
+/// — unit-testable without touching the real environment or config file.
+fn resolve_mouse_enabled(env_value: Option<bool>, config_value: Option<bool>) -> bool {
+    env_value.or(config_value).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -630,6 +682,46 @@ mod tests {
             }
             other => panic!("expected UnknownConfigValue, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_parses_the_mouse_key() {
+        assert_eq!(Config::parse(r#"{"mouse": true}"#).mouse, Some(true));
+        assert_eq!(Config::parse(r#"{"mouse": false}"#).mouse, Some(false));
+    }
+
+    #[test]
+    fn missing_or_non_boolean_mouse_key_is_none() {
+        assert_eq!(Config::parse(CFG).mouse, None);
+        assert_eq!(Config::parse(r#"{"mouse": "yes"}"#).mouse, None);
+    }
+
+    #[test]
+    fn mouse_defaults_to_off() {
+        assert!(!resolve_mouse_enabled(None, None));
+    }
+
+    #[test]
+    fn configured_mouse_wins_over_the_default() {
+        assert!(resolve_mouse_enabled(None, Some(true)));
+        assert!(!resolve_mouse_enabled(None, Some(false)));
+    }
+
+    #[test]
+    fn env_mouse_wins_over_the_config_key() {
+        assert!(resolve_mouse_enabled(Some(true), Some(false)));
+        assert!(!resolve_mouse_enabled(Some(false), Some(true)));
+    }
+
+    #[test]
+    fn parse_bool_accepts_the_documented_vocabulary_case_insensitively() {
+        for v in ["1", "true", "TRUE", "yes", "on"] {
+            assert_eq!(parse_bool(v), Some(true), "expected {v} to parse as true");
+        }
+        for v in ["0", "false", "FALSE", "no", "off"] {
+            assert_eq!(parse_bool(v), Some(false), "expected {v} to parse as false");
+        }
+        assert_eq!(parse_bool("maybe"), None);
     }
 
     #[test]
