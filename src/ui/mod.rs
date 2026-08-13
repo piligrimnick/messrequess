@@ -30,8 +30,10 @@ const REFRESH_SECS: u64 = 300;
 const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn print_plain(items: &[MergeRequest]) {
+    let mut tmux_backend = false;
     match crate::config::resolved_terminal_backend() {
         Ok((name, source)) => {
+            tmux_backend = name == crate::terminal::TerminalBackendName::Tmux;
             println!(
                 "Terminal backend: {} ({})",
                 name.as_str(),
@@ -39,6 +41,15 @@ pub fn print_plain(items: &[MergeRequest]) {
             )
         }
         Err(err) => println!("Terminal backend: unavailable — {err}"),
+    }
+    // Only meaningful for tmux (messreq-e5t.7) — iTerm2 has no pane concept,
+    // so showing it unconditionally would raise a question ("why does
+    // switching to iTerm2 not honor open_mode?") that does not apply.
+    if tmux_backend {
+        match crate::config::open_mode() {
+            Ok(mode) => println!("Session open mode: {}", mode.as_str()),
+            Err(err) => println!("Session open mode: unavailable — {err}"),
+        }
     }
     for mine in [true, false] {
         let group: Vec<&MergeRequest> = items.iter().filter(|m| m.mine == mine).collect();
