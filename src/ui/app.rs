@@ -65,10 +65,35 @@ pub(crate) struct App {
     pub(crate) notice: Option<String>,
     // the terminal tells Shift+Enter apart (kitty protocol)
     pub(crate) kbd_enhanced: bool,
+    // Every method that would otherwise write to ~/.local/state/messreq/
+    // (`mark_seen`, `mark_all_seen`, `prune_state`) checks this first and
+    // skips the write instead — see `new_read_only`. Keeping the guard next
+    // to each write site (rather than, say, a single check in `poll_pending`)
+    // is what makes the guarantee hold for any future caller of those
+    // methods, not just the ones `run_snapshot` happens to reach today.
+    pub(crate) read_only: bool,
 }
 
 impl App {
     pub(crate) fn new(me: String) -> App {
+        Self::new_with(me, false)
+    }
+
+    /// Same as `new`, but never writes to `~/.local/state/messreq/` while
+    /// still rendering the identical frame — for `--snapshot`, which is
+    /// documented as a read-only layout check but used to run `mark_all_seen`
+    /// and `prune_state` like the real TUI (messreq-9b5.2). The in-memory
+    /// `seen`/`work` maps still get updated inside `poll_pending` (and would
+    /// still update via `mark_seen`, if a future caller reached it from a
+    /// read-only `App`), so the frame looks exactly like the live TUI would,
+    /// including the silent first-run baseline (no MR lights up as new);
+    /// only the disk writes (`save_seen`, `save_worktabs`, `prune_prompts`)
+    /// are skipped.
+    pub(crate) fn new_read_only(me: String) -> App {
+        Self::new_with(me, true)
+    }
+
+    fn new_with(me: String, read_only: bool) -> App {
         let mut app = App {
             items: vec![],
             order: vec![],
@@ -87,6 +112,7 @@ impl App {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            read_only,
         };
         app.start_reload();
         app
@@ -147,7 +173,9 @@ impl App {
     pub(crate) fn mark_seen(&mut self, item_idx: usize) {
         if let Some(mr) = self.items.get(item_idx) {
             self.seen.insert(mr_key(mr), json!(mr.updated_at));
-            save_seen(&self.seen);
+            if !self.read_only {
+                save_seen(&self.seen);
+            }
         }
     }
 
@@ -155,7 +183,9 @@ impl App {
         for mr in &self.items {
             self.seen.insert(mr_key(mr), json!(mr.updated_at));
         }
-        save_seen(&self.seen);
+        if !self.read_only {
+            save_seen(&self.seen);
+        }
     }
 
     /// Drop the seen/worktabs entries for MRs that are no longer in the response
@@ -163,6 +193,11 @@ impl App {
     /// grow monotonically. An empty list is almost always a failed request
     /// (VPN/token) rather than "every MR got closed", so in that case we touch
     /// nothing.
+    ///
+    /// In `read_only` mode the in-memory maps are still pruned (so behavior
+    /// stays consistent within the run), but nothing is written to disk —
+    /// entries for MRs that are not in `items` never render as cards anyway,
+    /// so skipping the writes cannot change the frame.
     fn prune_state(&mut self) {
         if self.items.is_empty() {
             return;
@@ -171,17 +206,19 @@ impl App {
 
         let before = self.work.len();
         self.work.retain(|k, _| live.contains(k));
-        if self.work.len() != before {
+        if !self.read_only && self.work.len() != before {
             save_worktabs(&self.work);
         }
 
         let before = self.seen.len();
         self.seen.retain(|k, _| live.contains(k));
-        if self.seen.len() != before {
+        if !self.read_only && self.seen.len() != before {
             save_seen(&self.seen);
         }
 
-        prune_prompts(&self.work);
+        if !self.read_only {
+            prune_prompts(&self.work);
+        }
     }
 
     pub(crate) fn is_loading(&self) -> bool {
@@ -349,6 +386,7 @@ mod tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            read_only: false,
         }
     }
 
@@ -455,5 +493,144 @@ mod tests {
         assert_eq!(app.order, vec![0, 2]);
         assert_eq!(app.sel, 1);
         assert_eq!(app.selected_item(), Some(2)); // mr 9
+    }
+
+    // messreq-9b5.2: `--snapshot` is documented as a read-only layout check,
+    // but it used to build a full `App` and run `mark_all_seen`/`prune_state`
+    // like the live TUI, silently acknowledging every MR as seen and pruning
+    // worktabs/seen entries. `App::new_read_only` (used only by
+    // `ui::run_snapshot`) must render the identical frame while never
+    // touching `~/.local/state/messreq/` on disk. These tests point `HOME`
+    // at a throwaway directory to exercise the real save/load/prune
+    // functions without risking the machine's actual state files.
+
+    /// Points `HOME` at a fresh temp directory for the test's duration and
+    /// restores the previous value on drop (including on panic/assert
+    /// failure), so a failing assertion never leaves `HOME` pointed at a
+    /// scratch directory for whatever runs next in the same process.
+    struct HomeOverride {
+        prev: Option<String>,
+    }
+
+    impl HomeOverride {
+        fn install(dir: &std::path::Path) -> HomeOverride {
+            let prev = std::env::var("HOME").ok();
+            // SAFETY: the caller must hold `HOME_LOCK` for the lifetime of
+            // this value. That only guards against the two tests below
+            // racing each other — it does nothing for some future test that
+            // reads or writes `HOME` without taking the same lock. Verified
+            // by inspection that no other test in this crate touches `HOME`
+            // today; a new one that does must take `HOME_LOCK` too.
+            unsafe { std::env::set_var("HOME", dir) };
+            HomeOverride { prev }
+        }
+    }
+
+    impl Drop for HomeOverride {
+        fn drop(&mut self) {
+            // SAFETY: same caller obligation as `install`.
+            unsafe {
+                match &self.prev {
+                    Some(v) => std::env::set_var("HOME", v),
+                    None => std::env::remove_var("HOME"),
+                }
+            }
+        }
+    }
+
+    /// Serializes the two tests below so they don't race each other's `HOME`
+    /// mutation — see the SAFETY note on `HomeOverride::install`. A poisoned
+    /// lock (one of the two panicked mid-test) is recovered rather than
+    /// propagated, so the other test still gets to run and report its own
+    /// result instead of failing with an unrelated `PoisonError`.
+    static HOME_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn lock_home() -> std::sync::MutexGuard<'static, ()> {
+        HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn temp_home(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "messreq-test-home-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".local/state/messreq/prompts")).unwrap();
+        dir
+    }
+
+    #[test]
+    fn read_only_first_run_records_the_seen_baseline_only_in_memory() {
+        let _lock = lock_home();
+        let home = temp_home("first-run");
+        let _home = HomeOverride::install(&home);
+        let seen_path = home.join(".local/state/messreq/seen.json");
+
+        // First run: no seen.json on disk at all.
+        assert!(!seen_path.exists());
+
+        let mut app = app_with(vec![mr(1, 7), mr(1, 8)]);
+        app.read_only = true;
+        assert!(app.seen.is_empty());
+
+        app.mark_all_seen();
+
+        // Nothing written to disk...
+        assert!(
+            !seen_path.exists(),
+            "read-only mark_all_seen must not create seen.json"
+        );
+        // ...but the in-memory map is populated exactly like the live TUI
+        // would, so `is_new` still comes back false for every MR (the same
+        // silent first-run baseline), not "everything just showed up".
+        assert!(!app.seen.is_empty());
+        assert!(!app.is_new(&app.items[0]));
+        assert!(!app.is_new(&app.items[1]));
+    }
+
+    #[test]
+    fn read_only_prune_state_leaves_worktabs_seen_and_prompts_untouched() {
+        let _lock = lock_home();
+        let home = temp_home("prune");
+        let _home = HomeOverride::install(&home);
+        let state_dir = home.join(".local/state/messreq");
+        let seen_path = state_dir.join("seen.json");
+        let worktabs_path = state_dir.join("worktabs.json");
+        let prompt_path = state_dir.join("prompts/stale-sid.txt");
+
+        // Seed state as if MR 1!999 (not in this run's `items`) still had
+        // bindings — exactly what a normal (non-read-only) `prune_state`
+        // would drop, and what `prune_prompts` would delete the prompt file
+        // for.
+        let seen_before = "{\"1!999\":\"2020-01-01T00:00:00Z\"}";
+        let worktabs_before = "{\"1!999\":{\"claude_session\":\"stale-sid\",\"name\":\"n\",\"iterm_session\":\"\",\"started\":\"00:00\"}}";
+        let prompt_before = "stale prompt text";
+        std::fs::write(&seen_path, seen_before).unwrap();
+        std::fs::write(&worktabs_path, worktabs_before).unwrap();
+        std::fs::write(&prompt_path, prompt_before).unwrap();
+
+        let mut app = app_with(vec![mr(1, 7)]); // 1!999 is NOT among items
+        app.read_only = true;
+        app.seen = load_seen();
+        app.work = load_worktabs();
+
+        app.prune_state();
+
+        // Disk is byte-identical to what was seeded.
+        assert_eq!(std::fs::read_to_string(&seen_path).unwrap(), seen_before);
+        assert_eq!(
+            std::fs::read_to_string(&worktabs_path).unwrap(),
+            worktabs_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(&prompt_path).unwrap(),
+            prompt_before
+        );
+
+        // In-memory state is pruned as usual (it just never hits disk) —
+        // 1!999 is gone from both maps.
+        assert!(!app.seen.contains_key("1!999"));
+        assert!(!app.work.contains_key("1!999"));
     }
 }

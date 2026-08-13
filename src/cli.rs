@@ -29,7 +29,8 @@ Run modes:
   (no flags)       launch the TUI
   --plain, --once  print the MR list as plain text and exit
   --snapshot       render one TUI frame to text (118x46), to check the
-                   layout without a real terminal
+                   layout without a real terminal; read-only — never marks
+                   MRs seen or prunes worktabs/seen state
   --prompt <iid>   print the prompt that would open a Claude session for
                    merge request !<iid>
   --dump-prompts   write the built-in prompt templates to

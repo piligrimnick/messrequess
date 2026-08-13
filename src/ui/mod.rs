@@ -91,9 +91,12 @@ pub fn run_tui(me: String) -> std::io::Result<()> {
     res
 }
 
-/// Render a single frame to text (to check the layout without a real terminal).
+/// Render a single frame to text (to check the layout without a real
+/// terminal). Read-only: unlike the live TUI, this must not acknowledge MRs
+/// as seen or prune worktabs/seen entries on disk (messreq-9b5.2) — the
+/// frame it renders is otherwise identical to what the real TUI would show.
 pub fn run_snapshot(me: String) {
-    let mut app = App::new(me);
+    let mut app = App::new_read_only(me);
     while app.is_loading() {
         app.poll_pending();
         std::thread::sleep(Duration::from_millis(50));

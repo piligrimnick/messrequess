@@ -227,6 +227,7 @@ mod tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            read_only: false,
         }
     }
 
