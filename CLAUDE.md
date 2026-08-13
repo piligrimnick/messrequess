@@ -131,7 +131,9 @@ You can build while the TUI is running — cargo writes a new file and swaps it 
 messreq                    # TUI
 messreq --plain            # (= --once) a single textual dump of the MR list
 messreq --snapshot         # one TUI frame rendered to text via TestBackend
-                           # (118×46) — check the layout without a real terminal
+                           # (118×46) — check the layout without a real terminal;
+                           # read-only — never marks MRs seen or prunes
+                           # worktabs/seen state (messreq-9b5.2)
 messreq --prompt <iid>     # print the prompt (Surface mode) that would go to Claude
 messreq --dump-prompts     # write the built-in prompt templates out to
                            # ~/.config/messreq/prompts/ (existing files are left alone)

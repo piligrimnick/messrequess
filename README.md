@@ -135,7 +135,8 @@ The list reloads by itself every 300 seconds.
 messreq                    # the TUI
 messreq --plain            # (= --once) one textual dump of the MR list, then exit
 messreq --snapshot         # render a single TUI frame to text (118×46) — layout
-                           # checking without a real terminal
+                           # checking without a real terminal; read-only — never
+                           # marks MRs seen or prunes worktabs/seen state
 messreq --prompt <iid>     # print the prompt that Enter would send for this MR
 messreq --dump-prompts     # write the built-in prompt templates to ~/.config/messreq/prompts/
 messreq --notify           # one notification pass (see below)
