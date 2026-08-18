@@ -1,14 +1,14 @@
-# Сборка
+# Build output
 /target
 
-# Изолированные worktree агентов
+# Isolated agent worktrees
 .claude/worktrees/
 
-# Локальные настройки инструментов (машинно-зависимые)
+# Local tool settings: per-machine
 .claude/settings.local.json
 .codex/*.local.*
 
-# Остатки разрешения конфликтов
+# Leftovers from resolving merge conflicts
 *.orig
 *.rej
 
@@ -16,7 +16,7 @@
 .DS_Store
 ._*
 
-# Редакторы
+# Editors
 .idea/
 .vscode/
 *.swp
