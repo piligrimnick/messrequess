@@ -1,10 +1,17 @@
 # messreq
 
-A terminal dashboard for GitLab merge requests: the ones you opened, and the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads and merge-train position — and, more usefully, a computed answer to **"whose turn is it"**. Press Enter on a card and a new iTerm2 tab opens with a Claude Code session that already has that MR's context loaded.
+[![CI](https://github.com/piligrimnick/messrequess/actions/workflows/ci.yml/badge.svg)](https://github.com/piligrimnick/messrequess/actions/workflows/ci.yml)
+[![version](https://img.shields.io/badge/version-0.1.0-blue)](Cargo.toml)
+[![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
+[![platform](https://img.shields.io/badge/platform-macOS-lightgrey)](#read-this-before-installing)
+
+A terminal dashboard for GitLab merge requests: the ones you opened, and the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads and merge-train position — and, more usefully, a computed answer to **"whose turn is it"**. Press Enter on a card and a new session opens — an iTerm2 tab or a tmux pane, whichever backend you are using — with Claude Code already holding that MR's context.
 
 ## Read this before installing
 
 This is one person's tool, published because someone else might find it useful. It is not a product and it does not try to work everywhere. It assumes a very specific setup, and if you don't have that setup it will not work — not "work with reduced functionality", but not work.
+
+**The version is 0.1.0, and it means what it says.** One person uses this daily on one machine; that is the whole test matrix. Config keys, prompt template names, the state file formats and the flags can all change without a deprecation period, and there is no changelog to read before upgrading. There are no releases and no tags yet either — installing means building whatever `main` currently holds.
 
 | Requirement | Why | Optional? |
 |---|---|---|
@@ -56,6 +63,8 @@ Notifications key off the same computation, so "needs action" means the same thi
 
 ## Install
 
+Read the requirements table above first — `glab`, iTerm2 and the Claude Code CLI are checked for at runtime, not at build time, so a successful build tells you nothing about whether the tool will work for you.
+
 ```bash
 cargo install --git https://github.com/piligrimnick/messrequess
 ```
@@ -76,7 +85,7 @@ Or build in place and symlink it yourself:
 cargo build --release         # target/release/messreq
 ```
 
-Check that the prerequisites are in place before the first run:
+Then check the prerequisites before the first run. There is no `messreq --version`; the version lives in `Cargo.toml` and in the badge above.
 
 ```bash
 glab auth status              # must show an authenticated host
@@ -86,7 +95,7 @@ claude --version
 
 ## Configure
 
-`~/.config/messreq/config.json` (or `$XDG_CONFIG_HOME/messreq/config.json`) maps a GitLab project to the local checkout where the Claude session should start:
+The config file lives at `$XDG_CONFIG_HOME/messreq/config.json` when `XDG_CONFIG_HOME` is set and non-empty, and at `~/.config/messreq/config.json` otherwise. Its main job is mapping a GitLab project to the local checkout where the Claude session should start:
 
 ```json
 {
@@ -94,15 +103,53 @@ claude --version
   "projects": {
     "acme/backend": "~/src/backend",
     "acme/frontend": "~/src/frontend"
-  }
+  },
+  "terminal": "tmux",
+  "open_mode": "pane",
+  "pane_width": 50,
+  "mouse": false
 }
 ```
 
-A key in `projects` is the project path as GitLab shows it — the same string that appears on the card. Matching ignores case and surrounding slashes. `default_path` covers every project not listed; for a monorepo it is all you need. A leading `~` expands to `$HOME`.
+Every key it understands:
 
-The file is optional. Without it the dashboard still works — there is just nowhere to open a session, so Enter shows a popup pointing at this file.
+| Key | Type | Default | What it does |
+|---|---|---|---|
+| `default_path` | string | none | The checkout used for every project not listed in `projects`. For a monorepo it is all you need. A blank string counts as absent |
+| `projects` | object | `{}` | GitLab project path → local checkout. The key is the path as GitLab shows it — the same string that appears on the card — matched with case and surrounding slashes ignored. A leading `~` expands to `$HOME`, here and in `default_path` |
+| `terminal` | string | auto-detected | Which backend opens sessions: `"iterm2"` or `"tmux"`, case-insensitive. Omit it to let messreq detect one — tmux when messreq itself runs inside tmux, otherwise a working iTerm2, otherwise tmux |
+| `open_mode` | string | `"pane"` | tmux only: `"pane"` splits a pane beside the dashboard, `"window"` opens a new tmux window. No effect outside tmux, which always opens a window |
+| `pane_width` | number | `50` | tmux `"pane"` mode only: the percentage of the window's width the dashboard keeps, clamped to 10–90. Config-only — there is no environment override for this one |
+| `mouse` | bool | `false` | Wheel and click support in the TUI — see [Mouse support](#mouse-support-messreq-9td-off-by-default) for the trade-off |
 
-The GitLab host is resolved in this order: `$GITLAB_HOST`, then the instance in `glab`'s own `config.yml` that has a token, then `gitlab.com`. It is passed explicitly on every call, because under `launchd` there is no git repo in the working directory and `glab` would otherwise fall back to `gitlab.com` with the wrong token.
+The file is optional, and so is every key in it. Without the file the dashboard still works — there is just nowhere to open a session, so Enter shows a popup pointing at this file. A file that is not valid JSON is read as *no file at all*: an empty config, no error, no crash. Individual keys are just as forgiving — a value of the wrong type (`"pane_width": "wide"`) is ignored and the default applies.
+
+Two keys are the exception, because a typo there has no sensible default to fall back to: an unrecognized `terminal` or `open_mode` is an error naming the bad value, not a silent fallback. It does not stop the dashboard from starting — it surfaces when you press Enter to open a session, and `messreq --plain` prints it at the top of its output.
+
+### The GitLab host
+
+Every call is `glab api` with the host passed explicitly, because under `launchd` there is no git repo in the working directory and `glab` would otherwise fall back to `gitlab.com` with the wrong token. The host is resolved once per process, in this order:
+
+1. `$GITLAB_HOST`, if set and not blank.
+2. The first `glab` `config.yml` found in `$GLAB_CONFIG_DIR`, `$XDG_CONFIG_HOME/glab-cli`, `~/Library/Application Support/glab-cli`, `~/.config/glab-cli` — taking an instance under `hosts:` that has a token. The top-level `host:` key is not trusted on its own (glab writes `gitlab.com` there on first run and never updates it after you log in elsewhere); it only breaks ties when several instances have tokens.
+3. `glab config get host` — in case the configuration moved somewhere none of those paths cover.
+4. `gitlab.com`.
+
+### Environment variables
+
+| Variable | What it does | Accepted values | Precedence |
+|---|---|---|---|
+| `MESSREQ_TERMINAL` | Forces the terminal backend for this run | `iterm2` or `tmux`, case-insensitive, trimmed | Wins over the `terminal` key **and** over auto-detection. Unset or blank falls through to them; an unrecognized value is an error |
+| `MESSREQ_OPEN_MODE` | tmux only: how a session opens when messreq runs inside tmux | `pane` or `window`, case-insensitive, trimmed | Wins over the `open_mode` key, then the `pane` default. Unset or blank falls through; an unrecognized value is an error |
+| `MESSREQ_MOUSE` | Wheel and click support in the TUI | `1`, `true`, `yes`, `on` / `0`, `false`, `no`, `off`, case-insensitive | Wins over the `mouse` key, then the off default. Unset, blank *or unrecognized* falls through — unlike the two above, a typo here is not an error |
+| `MESSREQ_DEBUG` | Prints diagnostics for failed `glab` calls, plus `glab auth status` | Any value, including empty — only the presence of the variable is checked | — |
+| `GITLAB_HOST` | The instance every `glab api` call goes to | A hostname; blank counts as unset | First in the host resolution above, ahead of glab's own configuration |
+| `GLAB_CONFIG_DIR` | Where to look for glab's `config.yml` | A directory path | Searched before `$XDG_CONFIG_HOME/glab-cli` and the two `$HOME` locations |
+| `XDG_CONFIG_HOME` | Base of the config directory: `$XDG_CONFIG_HOME/messreq/config.json` | A directory path; empty counts as unset | Wins over `$HOME/.config`. Also used for the legacy-path migration and for finding glab's config — but **not** for prompt templates, see below |
+| `HOME` | Base for the state directory (`~/.local/state/messreq/`), for the config directory when `XDG_CONFIG_HOME` is unset, and for prompt templates | A directory path | Falls back to `.` — the current directory — when unset, which is a last resort, not a feature |
+| `TMUX`, `TMUX_PANE`, `TERM_PROGRAM` | Read, never set by you: tmux and iTerm2 set them. A non-empty `TMUX` makes detection pick tmux; `TERM_PROGRAM=iTerm.app` plus an `it2` probe that answers picks iTerm2; `TMUX_PANE` is how messreq knows which pane is its own | — | — |
+
+**One known inconsistency.** Prompt template overrides are always looked up under `$HOME/.config/messreq/prompts/`, even when `XDG_CONFIG_HOME` points somewhere else — while the config file honours it. Under a non-default `XDG_CONFIG_HOME` your prompt overrides are read from a directory nothing else uses. That is a bug, tracked as `messreq-u0c`, not a deliberate split.
 
 ### Prompt templates
 
@@ -132,7 +179,7 @@ If `~/.config/messreq/prompts/` still has `.txt` files from before this format c
 
 ### Mouse support (messreq-9td, off by default)
 
-Set `"mouse": true` in `config.json` (or `MESSREQ_MOUSE=1`, same precedence as `terminal`/`open_mode` — see [Other run modes](#other-run-modes)) to turn on the wheel and clicks:
+Set `"mouse": true` in `config.json` (or `MESSREQ_MOUSE=1`, same precedence as `terminal`/`open_mode` — see [Environment variables](#environment-variables)) to turn on the wheel and clicks:
 
 - the wheel moves the selection one card at a time, the same step `k`/`j` take — the list already scrolls by keeping the selection visible (`App::top` is recomputed from wherever it lands), so this reuses that instead of giving the viewport a scroll position of its own;
 - a left click selects the card under the pointer. It never opens or resumes a session — Enter stays the only way to do that. Spawning a session opens a tab/pane and starts a process, and a single accidental click is far too easy to trigger for that to be reversible, so there is no double-click handling either.
@@ -158,60 +205,28 @@ messreq --snapshot         # render a single TUI frame to text (118×46) — lay
                            # marks MRs seen or prunes worktabs/seen state
 messreq --prompt <iid>     # print the prompt that Enter would send for this MR
 messreq --dump-prompts     # write the built-in prompt templates to ~/.config/messreq/prompts/
-messreq --notify           # one notification pass (see below)
-MESSREQ_DEBUG=1 messreq …  # diagnostics for failed glab calls, plus `glab auth status`
-MESSREQ_TERMINAL=tmux messreq …  # force the terminal backend for this run: "iterm2" or
-                                  # "tmux", case-insensitive. Wins over the "terminal" key
-                                  # in config.json and over auto-detection; empty or unset
-                                  # falls through to them, an unrecognized value is an
-                                  # error. One-off testing without editing config.json —
-                                  # and a way to pin a backend for the launchd notify
-                                  # agent, via its own EnvironmentVariables block.
-MESSREQ_OPEN_MODE=window messreq …  # tmux only: how a session opens when messreq is
-                                     # itself running inside tmux — "pane" (default: split
-                                     # beside the dashboard) or "window" (new tmux window).
-                                     # Wins over the "open_mode" key in config.json; empty
-                                     # or unset falls through to it, then to "pane". No
-                                     # effect outside tmux, which always opens a window.
-MESSREQ_MOUSE=1 messreq …           # turn on wheel/click support for this run — see
-                                     # "Mouse support" above. Wins over the "mouse" key in
-                                     # config.json; empty, unset, or unrecognized falls
-                                     # through to it, then to off.
+messreq --notify           # one notification pass, for mrdash-gui (see below)
+messreq --help             # (= -h) the one-screen summary of all of this
 ```
+
+Every one of these also takes the environment variables from [Environment variables](#environment-variables) — they are run-scoped, so `MESSREQ_TERMINAL=tmux messreq` pins a backend for one run without editing `config.json` and remembering to revert it. That is also how a `launchd` agent running `--notify` would pin one, through its own `EnvironmentVariables` block: it has no flag for it.
 
 Inside tmux, a session opens as a pane beside the dashboard by default — tmux's own `main-vertical` layout keeps the dashboard at a fixed share of the width (`"pane_width"` in config.json, default 50%) no matter how many session panes are open. Set `"open_mode": "window"` in config.json (or `MESSREQ_OPEN_MODE=window`) for the pre-messreq-e5t.7 behavior of a new tmux window per session.
 
 ## Notifications
 
-`messreq --notify` does one poll, compares it against the snapshot from the previous pass, and sends a desktop notification for what changed: a new MR you have to review, an approval on your own MR, your pipeline turning red, the turn switching to you, an MR that got merged or closed. More than four changes collapse into a single summary.
+The dashboard sends desktop notifications itself, as part of its own refresh — there is nothing to install and nothing to configure. Every 300 seconds it reloads the list, compares it against the snapshot from the previous pass, and tells you what changed: a new MR you have to review, an approval on your own MR, your pipeline turning red, the turn switching to you, an MR that got merged or closed. More than four changes collapse into a single summary.
 
-It is meant to be driven by a `launchd` agent — for example `~/Library/LaunchAgents/com.example.messreq.notify.plist`:
+**Notifications arrive only while the dashboard is open.** That is the deliberate shape of this tool, not a limitation waiting to be lifted: nothing polls your GitLab instance in the background, so there are no VPN prompts and no notifications at midnight. Close the dashboard and the polling stops with it.
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>com.example.messreq.notify</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/you/.cargo/bin/messreq</string>
-    <string>--notify</string>
-  </array>
-  <key>StartInterval</key><integer>300</integer>
-  <key>RunAtLoad</key><false/>
-</dict>
-</plist>
-```
+Two safeguards are worth knowing about, because both look like bugs the first time you hit them:
 
-```bash
-launchctl load ~/Library/LaunchAgents/com.example.messreq.notify.plist
-```
+- **The first pass is silent.** With no snapshot on disk yet, the current state is recorded as the baseline and nothing is sent — otherwise your first launch would announce every MR you already knew about.
+- **An empty response is treated as a failed request**, not as "every MR got closed". If the VPN drops or the token expires, the snapshot is left alone and no avalanche of false "merged" notifications goes out.
 
-Keep the interval at 300 seconds: `--notify` runs its own full load, so polling more often only duplicates what the TUI is already fetching.
+`terminal-notifier`, if installed, gets you a notification you can click to open the MR; without it the fallback is `osascript`, which cannot carry a link.
 
-**It only polls while the dashboard is open.** The TUI touches a heartbeat file on every tick; if that heartbeat is older than 120 seconds, `--notify` exits *before* making a single GitLab request. Close the dashboard and the background polling stops with it — no VPN prompts and no notifications at midnight.
+There is also a `messreq --notify` run mode: one pass over a list it fetches itself, then exit. The TUI no longer needs it — it exists for the sibling `mrdash-gui`, which shares these state files but has no notifications of its own. That mode refuses to touch GitLab unless a dashboard is open: both apps refresh a heartbeat file on every tick, and if that heartbeat is older than 120 seconds, `--notify` exits before making a single request. If you drive it from a `launchd` agent, keep the interval at 300 seconds — it runs its own full load, so polling more often only duplicates what the dashboard is already fetching.
 
 ## State on disk
 

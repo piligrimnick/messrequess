@@ -3,6 +3,14 @@ name = "messreq"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+description = "A terminal dashboard for GitLab merge requests: approvals, pipelines, unresolved threads, and whose turn it is"
+repository = "https://github.com/piligrimnick/messrequess"
+readme = "README.md"
+keywords = ["gitlab", "merge-request", "code-review", "tui", "dashboard"]
+categories = ["command-line-utilities", "development-tools"]
+# No `rust-version`: nobody has checked which older toolchains still build this
+# crate, and a number nobody verified is a promise nobody can keep. The
+# toolchain this is developed and gated against is pinned in rust-toolchain.toml.
 
 [[bin]]
 name = "messreq"
