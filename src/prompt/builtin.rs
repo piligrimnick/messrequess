@@ -16,15 +16,17 @@ const TPL_SURFACE_OTHER: &str = include_str!("../../prompts/surface_other.md");
 const TPL_MY_THREADS: &str = include_str!("../../prompts/my_threads.md");
 const TPL_DEEP: &str = include_str!("../../prompts/deep.md");
 const TPL_RESUME: &str = include_str!("../../prompts/resume.md");
+const TPL_BLANK_SYSTEM: &str = include_str!("../../prompts/blank_system.md");
 
 /// Every template: file name (without the extension) → the built-in default.
-const BUILTIN_PROMPTS: [(&str, &str); 7] = [
+const BUILTIN_PROMPTS: [(&str, &str); 8] = [
     ("header", TPL_HEADER),
     ("surface_mine", TPL_SURFACE_MINE),
     ("surface_other", TPL_SURFACE_OTHER),
     ("my_threads", TPL_MY_THREADS),
     ("deep", TPL_DEEP),
     ("resume", TPL_RESUME),
+    ("blank_system", TPL_BLANK_SYSTEM),
     ("footer", TPL_FOOTER),
 ];
 

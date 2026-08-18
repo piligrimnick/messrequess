@@ -30,7 +30,9 @@ use serde_json::json;
 use crate::config::work_dir_for_mr;
 use crate::error::WorkError;
 use crate::model::MergeRequest;
-use crate::prompt::{build_prompt_line, build_resume_prompt_line, PromptMode};
+use crate::prompt::{
+    build_prompt_line, build_resume_prompt_line, build_system_context_line, PromptMode,
+};
 
 /// `--notify` polls GitLab only while the TUI/GUI is open (heartbeat fresher than this threshold).
 pub const HEARTBEAT_STALE_SECS: u64 = 120;
@@ -203,8 +205,40 @@ fn claude_script(work_dir: &str, args: &str) -> String {
     format!("cd {} && exec claude {}", shq(work_dir), args)
 }
 
+/// The claude arguments for a brand-new session: the fixed session id and
+/// name, plus whichever of the two per-session files this launch wrote.
+/// Both are read back with `"$(cat FILE)"` for the reason `claude_script`
+/// spells out — a long typed line loses its Enter.
+///
+/// The prompt is positional, so it has to come last; the system context is a
+/// flag and goes before it. Keeping the order here rather than at the two
+/// call sites is the point of the helper (that, and being testable without
+/// spawning anything).
+fn new_session_args(
+    sid: &str,
+    name: &str,
+    prompt_file: Option<&std::path::Path>,
+    system_file: Option<&std::path::Path>,
+) -> String {
+    let cat = |f: &std::path::Path| format!("\"$(cat {})\"", shq(&f.display().to_string()));
+    let mut args = format!("--session-id {} --name {}", shq(sid), shq(name));
+    if let Some(f) = system_file {
+        args += &format!(" --append-system-prompt {}", cat(f));
+    }
+    if let Some(f) = prompt_file {
+        args += &format!(" {}", cat(f));
+    }
+    args
+}
+
 /// Open a new session in the configured terminal backend with claude for
 /// this MR (with a fixed session id).
+///
+/// Blank mode opens claude with no prompt, but not blind: the MR context
+/// goes in as an appended system prompt (`build_system_context_line`,
+/// messreq-a7n) so that the first thing you type can be the question rather
+/// than the context. Every other mode already carries that context inside
+/// its own prompt, so it gets the flag nowhere.
 pub(crate) fn start_work(
     mr: &MergeRequest,
     mode: PromptMode,
@@ -214,19 +248,19 @@ pub(crate) fn start_work(
     let name = format!("MR !{}", mr.number());
     let prompt = build_prompt_line(mr, mode);
 
-    let args = if prompt.is_empty() {
-        // Blank mode: open claude in the repo with no prompt.
-        format!("--session-id {} --name {}", shq(&sid), shq(&name))
-    } else {
+    let prompt_file = (!prompt.is_empty()).then(|| {
         let file = prompts_dir().join(format!("{sid}.txt"));
         let _ = std::fs::write(&file, &prompt);
-        format!(
-            "--session-id {} --name {} \"$(cat {})\"",
-            shq(&sid),
-            shq(&name),
-            shq(&file.display().to_string())
-        )
-    };
+        file
+    });
+    let system_file = prompt_file.is_none().then(|| build_system_context_line(mr));
+    let system_file = system_file.filter(|c| !c.is_empty()).map(|context| {
+        let file = prompts_dir().join(format!("{sid}.sys"));
+        let _ = std::fs::write(&file, &context);
+        file
+    });
+
+    let args = new_session_args(&sid, &name, prompt_file.as_deref(), system_file.as_deref());
     open_session(&claude_script(&work_dir, &args), sid, name)
 }
 
@@ -299,7 +333,8 @@ pub(crate) fn prune_prompts(work: &serde_json::Map<String, serde_json::Value>) {
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        // "<sid>.txt" and "<sid>.started" share the same stem — the sid itself.
+        // "<sid>.txt", "<sid>.sys" and "<sid>.started" share the same stem
+        // — the sid itself.
         let keep = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -404,6 +439,44 @@ mod tests {
         assert!(script.starts_with("cd '/w' && exec claude "));
         assert!(script.contains(r#""$(cat '/p/sid.txt')""#));
         assert!(!script.contains("string collect"));
+    }
+
+    #[test]
+    fn new_session_args_put_the_positional_prompt_last() {
+        let args = new_session_args(
+            "sid-1",
+            "MR !7",
+            Some(std::path::Path::new("/p/sid-1.txt")),
+            None,
+        );
+        assert_eq!(
+            args,
+            r#"--session-id 'sid-1' --name 'MR !7' "$(cat '/p/sid-1.txt')""#
+        );
+    }
+
+    #[test]
+    fn new_session_args_pass_the_blank_session_context_as_a_system_prompt() {
+        // Blank mode: no positional prompt at all, the MR context rides in on
+        // --append-system-prompt (messreq-a7n).
+        let args = new_session_args(
+            "sid-1",
+            "MR !7",
+            None,
+            Some(std::path::Path::new("/p/sid-1.sys")),
+        );
+        assert_eq!(
+            args,
+            r#"--session-id 'sid-1' --name 'MR !7' --append-system-prompt "$(cat '/p/sid-1.sys')""#
+        );
+    }
+
+    #[test]
+    fn new_session_args_without_files_are_just_the_id_and_name() {
+        assert_eq!(
+            new_session_args("sid-1", "MR !7", None, None),
+            "--session-id 'sid-1' --name 'MR !7'"
+        );
     }
 
     #[test]

@@ -32,6 +32,9 @@
 //!   list of what moved since `--notify`'s last snapshot — empty if nothing
 //!   did or nothing is known yet) and `elapsed` (how long ago that snapshot
 //!   was taken — see `notify::state_age`).
+//!   The `blank_system` template additionally gets `header` — the already
+//!   rendered `header` template, so that the MR facts can be placed anywhere
+//!   in it without restating every field.
 
 mod builtin;
 mod engine;
@@ -203,6 +206,42 @@ fn build_prompt(mr: &MergeRequest, mode: PromptMode, tpl: &Templates) -> String 
     sanitize_prompt(&s)
 }
 
+/// The MR context handed to a *blank* session (`PromptMode::Blank`) as an
+/// appended system prompt (`claude --append-system-prompt`) — see
+/// `work::start_work`.
+///
+/// A blank session deliberately gets no prompt: you open Claude in the right
+/// repository and say what you want yourself. Until messreq-a7n that also
+/// meant the agent had no idea which merge request the dashboard was sitting
+/// on, so the first thing you had to type was the context you had just been
+/// looking at. It goes into the system prompt rather than a first user
+/// message precisely to keep the session blank: nothing is asked, nothing is
+/// answered, the facts are just there.
+///
+/// The threads follow the same rule the resume prompt uses: your own MR gets
+/// every unresolved thread, someone else's only the ones you took part in.
+pub(crate) fn build_system_context_line(mr: &MergeRequest) -> String {
+    build_system_context(mr, &Templates::load())
+}
+
+fn build_system_context(mr: &MergeRequest, tpl: &Templates) -> String {
+    let threads = relevant_threads(mr, mr.mine);
+    let mut vars = prompt_vars(mr, &threads);
+    // `header` is a variable here rather than a block the code concatenates
+    // in front, so that an overridden `blank_system.md` decides where the MR
+    // facts go (or leaves them out) without having to restate every field.
+    let header = render_template(&tpl.get("header"), &vars)
+        .trim_end()
+        .to_string();
+    vars.insert("header", header);
+
+    let mut s = String::new();
+    s += render_template(&tpl.get("blank_system"), &vars).trim_end();
+    s += "\n\n";
+    s += render_template(&tpl.get("footer"), &vars).trim_end();
+    sanitize_prompt(&s)
+}
+
 /// The prompt used to reopen a session (`resume_work`): what moved on the MR
 /// since it was last seen, not a repeat of the full context — the session
 /// already has that from when it started.
@@ -335,6 +374,48 @@ mod tests {
     fn blank_mode_has_no_prompt() {
         let p = build_prompt(&mr(false, vec![]), PromptMode::Blank, &Templates::builtin());
         assert!(p.is_empty());
+    }
+
+    #[test]
+    fn blank_system_context_carries_the_mr_facts_and_no_task() {
+        let c = build_system_context(&mr(false, vec![]), &Templates::builtin());
+        assert!(!c.is_empty());
+        assert!(
+            c.contains("Merge request group/project!42: Add widget"),
+            "{c}"
+        );
+        assert!(c.contains("URL: https://gitlab.example.com/group/project/-/merge_requests/42"));
+        assert!(c.contains("Reviewers: bob"));
+        assert!(c.contains("glab mr diff 42 -R group/project"), "{c}");
+        // Background, not an instruction to start reviewing: none of the task
+        // blocks leak in here.
+        assert!(!c.contains("This is your MR"), "{c}");
+    }
+
+    #[test]
+    fn blank_system_context_lists_threads_by_the_same_rule_as_resume() {
+        let threads = || {
+            vec![
+                thread("bob", "needs an index", false),
+                thread("me", "agreed", true),
+            ]
+        };
+        let own = build_system_context(&mr(true, threads()), &Templates::builtin());
+        assert!(own.contains("Unresolved threads (2):"), "{own}");
+        assert!(
+            own.contains("needs an index") && own.contains("agreed"),
+            "{own}"
+        );
+
+        let other = build_system_context(&mr(false, threads()), &Templates::builtin());
+        assert!(other.contains("Unresolved threads (1):"), "{other}");
+        assert!(!other.contains("needs an index"), "{other}");
+    }
+
+    #[test]
+    fn blank_system_context_drops_the_threads_section_when_there_are_none() {
+        let c = build_system_context(&mr(true, vec![]), &Templates::builtin());
+        assert!(!c.contains("Unresolved threads"), "{c}");
     }
 
     #[test]
