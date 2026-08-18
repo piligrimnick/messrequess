@@ -57,6 +57,14 @@ Notifications key off the same computation, so "needs action" means the same thi
 ## Install
 
 ```bash
+cargo install --git https://github.com/piligrimnick/messrequess
+```
+
+That builds from source and puts the `messreq` binary in `~/.cargo/bin`, so it needs a Rust toolchain and about a minute of compiling. There are still no prebuilt binaries and no Homebrew tap — building is the only way in.
+
+If you want the sources as well — to read the code, to edit the built-in prompts in [`prompts/`](prompts/), or to contribute — clone first:
+
+```bash
 git clone https://github.com/piligrimnick/messrequess.git
 cd messrequess
 cargo install --path .        # installs the `messreq` binary into ~/.cargo/bin
@@ -98,7 +106,7 @@ The GitLab host is resolved in this order: `$GITLAB_HOST`, then the instance in 
 
 ### Prompt templates
 
-The prompts sent to Claude are templates, not hard-coded strings — Markdown files, since a prompt is structured text a human edits, and `.md` gives you headings, lists and syntax highlighting in an editor. The built-in defaults live in [`prompts/`](prompts/) at the root of this repository. `messreq --dump-prompts` writes them out to `~/.config/messreq/prompts/` (existing files are left alone), after which you can edit any of them: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `footer`. Each one is looked up in that directory first and falls back to the built-in.
+The prompts sent to Claude are templates, not hard-coded strings — Markdown files, since a prompt is structured text a human edits, and `.md` gives you headings, lists and syntax highlighting in an editor. The built-in defaults live in [`prompts/`](prompts/) at the root of this repository. `messreq --dump-prompts` writes them out to `~/.config/messreq/prompts/` (existing files are left alone), after which you can edit any of them: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `blank_system`, `footer`. Each one is looked up in that directory first and falls back to the built-in.
 
 The syntax is `{variable}` substitution plus a non-nesting `[[if variable]]…[[else]]…[[end]]` block, where the condition is "the variable is non-empty". Two smaller pieces are rendered in code and cannot be overridden from a template: the per-thread line and the "conflicts" marker in the header.
 
@@ -136,7 +144,7 @@ Enabling this makes the terminal claim the mouse (`EnableMouseCapture`), which i
 - **Drive to approved** / **Surface review + narrow spots** — the default, and what plain `Enter` uses. Which of the two it is depends on whether the MR is yours.
 - **Only my threads** — just the unresolved threads you took part in.
 - **Deep review (full diff)**.
-- **Open blank (no prompt)** — Claude in the right repository, nothing preloaded.
+- **Start new session (no prompt)** — Claude in the right repository with nothing to answer. It still knows which merge request you were looking at: the context (title, URL, pipeline, approvals, unresolved threads) is appended to the system prompt, so your first message can be the question instead of the background.
 
 The list reloads by itself every 300 seconds.
 
