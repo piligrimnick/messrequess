@@ -1,7 +1,7 @@
 # messreq
 
 [![CI](https://github.com/piligrimnick/messrequess/actions/workflows/ci.yml/badge.svg)](https://github.com/piligrimnick/messrequess/actions/workflows/ci.yml)
-[![version](https://img.shields.io/badge/version-0.1.0-blue)](Cargo.toml)
+[![version](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/piligrimnick/messrequess/tags)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![platform](https://img.shields.io/badge/platform-macOS-lightgrey)](#read-this-before-installing)
 
@@ -11,7 +11,7 @@ A terminal dashboard for GitLab merge requests: the ones you opened, and the one
 
 This is one person's tool, published because someone else might find it useful. It is not a product and it does not try to work everywhere. It assumes a very specific setup, and if you don't have that setup it will not work — not "work with reduced functionality", but not work.
 
-**The version is 0.1.0, and it means what it says.** One person uses this daily on one machine; that is the whole test matrix. Config keys, prompt template names, the state file formats and the flags can all change without a deprecation period, and there is no changelog to read before upgrading. There are no releases and no tags yet either — installing means building whatever `main` currently holds.
+**The version is 0.1.0, and it means what it says.** One person uses this daily on one machine; that is the whole test matrix. Config keys, prompt template names, the state file formats and the flags can all change without a deprecation period, and there is no changelog to read before upgrading. `v0.1.0` is tagged, so you can pin it with `cargo install --git https://github.com/piligrimnick/messrequess --tag v0.1.0`; installing without `--tag` builds whatever `main` currently holds.
 
 | Requirement | Why | Optional? |
 |---|---|---|
