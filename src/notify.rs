@@ -272,31 +272,90 @@ fn compute(
     Some((msgs, current))
 }
 
+/// Escape a value so terminal-notifier actually sees it.
+///
+/// terminal-notifier reads its options through `NSUserDefaults`' argument
+/// domain, which parses every `-key value` pair's value as a property list
+/// before storing it. A value whose first non-blank character opens a plist
+/// container (`[`, `(`, `{`, `<`) or a quoted string (`"`) fails that parse,
+/// and the pair is dropped wholesale — so `-message "[TD-1] Fix"` leaves
+/// terminal-notifier believing no message was given at all. Its own help
+/// banner says as much: "the first character of a message has to be escaped
+/// ... an open bracket ... has to be escaped like so: '\['". A backslash in
+/// front of that first character makes the parser read the value as a plain
+/// string, and the backslash itself does not reach the notification.
+///
+/// The leading blanks matter: the parser skips whitespace before deciding
+/// what it is looking at, so `" [TD-1] Fix"` fails exactly like `"[TD-1]
+/// Fix"`. The escape therefore goes in front of the first non-whitespace
+/// character, not in front of the string.
+fn escape_for_terminal_notifier(value: &str) -> String {
+    const PLIST_OPENERS: [char; 5] = ['[', '(', '{', '<', '"'];
+    match value.char_indices().find(|(_, c)| !c.is_whitespace()) {
+        Some((i, c)) if PLIST_OPENERS.contains(&c) => {
+            let mut out = String::with_capacity(value.len() + 1);
+            out.push_str(&value[..i]);
+            out.push('\\');
+            out.push_str(&value[i..]);
+            out
+        }
+        _ => value.to_string(),
+    }
+}
+
+/// The argv terminal-notifier is called with. Pure, so the escaping above is
+/// checkable without sending a real notification.
+fn terminal_notifier_args(subtitle: &str, message: &str, url: Option<&str>) -> Vec<String> {
+    let mut args = vec![
+        "-title".to_string(),
+        "messreq".to_string(),
+        "-subtitle".to_string(),
+        escape_for_terminal_notifier(subtitle),
+        "-message".to_string(),
+        escape_for_terminal_notifier(message),
+        "-sound".to_string(),
+        "default".to_string(),
+    ];
+    if let Some(u) = url {
+        args.push("-open".to_string());
+        args.push(escape_for_terminal_notifier(u));
+    }
+    args
+}
+
+/// The AppleScript passed to `osascript -e` when terminal-notifier is not
+/// installed. Pure for the same reason as `terminal_notifier_args`.
+fn osascript_notification(subtitle: &str, message: &str) -> String {
+    let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
+    format!(
+        "display notification \"{}\" with title \"messreq\" subtitle \"{}\"",
+        esc(message),
+        esc(subtitle)
+    )
+}
+
+/// Send one notification.
+///
+/// Both branches use `.output()` rather than `.status()`. `.status()` hands
+/// the child the parent's own stdin, stdout and stderr — which, when the
+/// dashboard runs the pass itself (messreq-dm4.1), are the terminal ratatui
+/// is drawing on. Anything the child printed landed on top of the frame, and
+/// anything it read stole the user's keystrokes. `.output()` closes all three
+/// (stdin is nulled, stdout and stderr are captured), so a misbehaving
+/// notifier can no longer reach the screen. Capturing rather than nulling
+/// costs nothing here — the largest thing either tool has ever printed is a
+/// 2 KB help banner — and it keeps the output available to a future caller
+/// that wants to look at it, which `Stdio::null()` would throw away.
 fn notify(subtitle: &str, message: &str, url: Option<&str>, has_tn: bool) {
     if has_tn {
-        let mut cmd = Command::new("terminal-notifier");
-        cmd.args([
-            "-title",
-            "messreq",
-            "-subtitle",
-            subtitle,
-            "-message",
-            message,
-            "-sound",
-            "default",
-        ]);
-        if let Some(u) = url {
-            cmd.args(["-open", u]);
-        }
-        let _ = cmd.status();
+        let _ = Command::new("terminal-notifier")
+            .args(terminal_notifier_args(subtitle, message, url))
+            .output();
     } else {
-        let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            "display notification \"{}\" with title \"messreq\" subtitle \"{}\"",
-            esc(message),
-            esc(subtitle)
-        );
-        let _ = Command::new("osascript").arg("-e").arg(script).status();
+        let _ = Command::new("osascript")
+            .arg("-e")
+            .arg(osascript_notification(subtitle, message))
+            .output();
     }
 }
 
@@ -773,5 +832,97 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+    /// The regression this guards: a real MR title starts with a Jira key
+    /// in square brackets ("[TD-96013] Remove ..."), NSUserDefaults' argument
+    /// domain fails to parse that as a property list and drops the whole
+    /// `-message` pair, and terminal-notifier — now believing it was given
+    /// no message — prints its help banner instead. Verified against
+    /// terminal-notifier 2.0.0: unescaped, it exits 1 with the usage banner;
+    /// escaped, it delivers "[TD-1] Fix" with the backslash stripped.
+    #[test]
+    fn a_message_opening_with_a_bracket_is_escaped() {
+        assert_eq!(escape_for_terminal_notifier("[TD-1] Fix"), r"\[TD-1] Fix");
+    }
+
+    /// Every character that opens a property-list container, plus the one
+    /// that opens a quoted string. All five were confirmed to trigger the
+    /// banner unescaped and to survive escaping.
+    #[test]
+    fn every_plist_opener_is_escaped() {
+        assert_eq!(escape_for_terminal_notifier("(a) b"), r"\(a) b");
+        assert_eq!(escape_for_terminal_notifier("{a} b"), r"\{a} b");
+        assert_eq!(escape_for_terminal_notifier("<a> b"), r"\<a> b");
+        assert_eq!(escape_for_terminal_notifier("\"a\" b"), "\\\"a\" b");
+    }
+
+    /// The parser skips leading whitespace before it decides what the value
+    /// is, so the escape has to go in front of the first non-blank character
+    /// rather than in front of the string.
+    #[test]
+    fn a_leading_blank_does_not_hide_the_opener() {
+        assert_eq!(
+            escape_for_terminal_notifier("  [TD-1] Fix"),
+            r"  \[TD-1] Fix"
+        );
+    }
+
+    /// Only the first character is special. Escaping brackets anywhere else
+    /// would put a literal backslash into the notification text.
+    #[test]
+    fn an_opener_that_is_not_first_is_left_alone() {
+        assert_eq!(
+            escape_for_terminal_notifier("Fix [TD-1] properly"),
+            "Fix [TD-1] properly"
+        );
+        assert_eq!(
+            escape_for_terminal_notifier("+approval - !42"),
+            "+approval - !42"
+        );
+        assert_eq!(escape_for_terminal_notifier(""), "");
+        assert_eq!(escape_for_terminal_notifier("   "), "   ");
+    }
+
+    #[test]
+    fn terminal_notifier_args_carry_the_escaped_values() {
+        let args = terminal_notifier_args(
+            "New MR to review - !59341",
+            "[TD-1] Fix",
+            Some("https://example.com/mr/1"),
+        );
+        assert_eq!(
+            args,
+            vec![
+                "-title",
+                "messreq",
+                "-subtitle",
+                "New MR to review - !59341",
+                "-message",
+                r"\[TD-1] Fix",
+                "-sound",
+                "default",
+                "-open",
+                "https://example.com/mr/1",
+            ]
+        );
+    }
+
+    #[test]
+    fn terminal_notifier_args_omit_open_without_a_url() {
+        let args = terminal_notifier_args("sub", "msg", None);
+        assert!(
+            !args.iter().any(|a| a == "-open"),
+            "no URL means no -open flag: {args:?}"
+        );
+    }
+
+    /// The AppleScript fallback builds one quoted string, so a quote or a
+    /// backslash in an MR title has to stay inside it.
+    #[test]
+    fn osascript_notification_escapes_quotes_and_backslashes() {
+        assert_eq!(
+            osascript_notification("sub", r#"a "b" c\d"#),
+            r#"display notification "a \"b\" c\\d" with title "messreq" subtitle "sub""#
+        );
     }
 }
