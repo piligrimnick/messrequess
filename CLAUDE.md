@@ -16,11 +16,13 @@ The rule covers:
 - beads issue titles, descriptions, and comments;
 - error and diagnostic messages, including panic text and CLI help.
 
-It applies to future edits as well, not just the current state. If you touch a line that still carries Russian text left over from the pre-open-source history, translate it while you are there. Never add new Russian anywhere. The remaining cleanup is tracked as `messreq-p81`.
+It applies to future edits as well, not just the current state. If you touch a line that still carries Russian text left over from the pre-open-source history, translate it while you are there. Never add new Russian anywhere.
+
+What is left in the working tree is one line: the test fixture in `src/ui/card.rs` (`truncate_cuts_cyrillic_by_characters_not_bytes`) needs a genuinely Cyrillic title to prove that truncation cuts by characters and not by bytes. That one is deliberate — a Latin string would not test anything. The issue backlog is still partly Russian, but it lives in `refs/dolt/data` rather than in the working tree, and translating it is tracked as `messreq-r8b`.
 
 ## What this is
 
-A terminal dashboard (ratatui TUI) for GitLab merge requests: your own open MRs plus the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads, the merge train, and a computed "whose turn is it". Enter on a card opens a new iTerm2 tab with a Claude session that already has the MR context loaded.
+A terminal dashboard (ratatui TUI) for GitLab merge requests: your own open MRs plus the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads, the merge train, and a computed "whose turn is it". Enter on a card opens a new terminal session — an iTerm2 tab or a tmux pane, whichever backend is in use — with a Claude session that already has the MR context loaded.
 
 The crate currently depends on `ratatui` and `serde_json`. Everything external happens through child processes: `glab`, `it2`, `claude`, `open`, `terminal-notifier`/`osascript`, `uuidgen`, `date`.
 
@@ -45,9 +47,11 @@ The logic lives in a library crate; `src/main.rs` is a thin binary that parses a
 | `config.rs` | `~/.config/messreq/config.json`, work-dir resolution |
 | `cli.rs` | `--help`/`-h` text and unknown-flag detection — has to run before `main.rs` calls into `glab` (via `forge.me()`) at all, so it's a pure module with its own unit tests rather than logic inlined in the `[[bin]]` crate |
 | `prompt/` | prompt assembly (`mod.rs`), the `{var}` / `[[if]]` engine (`engine.rs`), built-in templates (`builtin.rs`) |
-| `work.rs` | worktabs, seen, heartbeat, `it2`, launching and resuming sessions |
+| `work.rs` | worktabs, seen, heartbeat, launching and resuming sessions |
+| `terminal/` | the `TerminalBackend` trait (`mod.rs`) — open a session running a command, list live sessions, send a line, focus — with `iterm2.rs` and `tmux.rs` as its two implementations and `detect.rs` choosing between them |
+| `error.rs` | `WorkError`, the error type of the "open a Claude session" path (`work_dir_for_mr`, `start_work`, `resume_work`, `TerminalBackend::open`), so a caller can branch on the situation instead of matching strings |
 | `migrate.rs` | transitional shim: carries `~/.local/state/mrdash/` and `~/.config/mrdash/` forward to their `messreq` names on first startup after the rename (messreq-c9j); deletable once every machine has picked it up |
-| `ui/` | `App` state (`app.rs`), cards (`card.rs`), the frame (`screen.rs`), popups (`popup.rs`), run modes and event loop (`mod.rs`) |
+| `ui/` | `App` state (`app.rs`), cards (`card.rs`), the frame (`screen.rs`), popups (`popup.rs`), the prompt-mode menu (`menu.rs`), run modes and event loop (`mod.rs`) |
 | `notify.rs` | fingerprints, diffing between passes, delivery |
 | `time.rs` | `parse_iso8601`, `rel_age`, `age_days` |
 
@@ -70,9 +74,13 @@ Anyone setting this up on another machine has to do both steps themselves; nothi
 
 The repository is private, but the goal is open source plus a brew formula. The core (the MR model, `compute_action`, rendering, notifications) is generic; the glue used to be tied to one specific machine. Most of that is already fixed: the repository path comes from a config file, the tab command is POSIX, the default GitLab host is resolved from glab's own configuration, and the prompts are overridable templates.
 
-One P0 is still open (`bd list`):
+Local `main` carries nothing internal. Its history was squashed into `8a6c5e1` on 2026-08-10, and neither the internal GitLab host nor the personal checkout path survives anywhere in it — verify it the same way: `git log -S'<internal-host>' --oneline HEAD`, and the same search for `/Users/<name>`. Both print nothing. That is why `messreq-laj` is closed.
 
-- `messreq-laj` — the internal host and local paths are already in the commit history; flipping the repository to public leaves them there for good.
+The remote is a different question, and it is the one open P0:
+
+- `messreq-9i7` — the dirty history was pushed to GitHub before the squash and force-pushed over afterwards. A force-push hides commits, it does not delete them: GitHub keeps the objects it made unreachable and still serves them by SHA, so those commits — internal host, personal path, Russian commit messages — are one API call away from anyone who holds a SHA. Confirmed against the API, not inferred.
+
+**Do not flip the repository to public until `messreq-9i7` is resolved.** The issue holds the affected SHAs and the options; which one to take is a call for the repository owner, not something this file decides.
 
 ## Issues are tracked in beads
 
@@ -81,7 +89,7 @@ Don't start markdown TODOs and don't use TodoWrite — issues live in `bd` under
 ```bash
 bd list --status open     # the whole backlog
 bd ready                  # what is available to pick up
-bd show messreq-laj       # issue details
+bd show messreq-9i7       # issue details
 bd create "…" -p 1 -t bug -l release -d "…"
 ```
 
@@ -107,25 +115,32 @@ cargo build --release     # ~/.local/bin/messreq is a symlink to target/release/
 cargo run                 # run the TUI from sources
 cargo fmt
 cargo clippy --all-targets -- -D warnings
-                          # if the component is missing:
-                          # rustup component add clippy
+                          # clippy and rustfmt are components of the pinned
+                          # toolchain, so rustup installs them by itself
 ```
 
 CI runs on GitHub Actions (`.github/workflows/ci.yml`) on every push and pull request:
-`cargo fmt --all -- --check`, then `cargo clippy --all-targets -- -D warnings`, then
-`cargo test`, then `cargo build --release`. Clippy is strict — one warning fails the
-build — so run it locally before pushing. The runner is `ubuntu-latest` even though the
-tool targets macOS: every external program goes through `std::process::Command`, so
-nothing in the build or the tests needs a Mac, and Ubuntu minutes are ten times cheaper.
+`cargo fmt --all -- --check`, then `cargo clippy --all-targets --locked -- -D warnings`,
+then `cargo test --locked`, then `cargo build --release --locked`. Every step that
+resolves dependencies carries `--locked`, because `Cargo.lock` is committed and a run
+that silently re-resolved it would be testing a dependency set nobody has locally.
+Clippy is strict — one warning fails the build — so run it locally before pushing. The
+runner is `ubuntu-latest` even though the tool targets macOS: every external program goes
+through `std::process::Command`, so nothing in the build or the tests needs a Mac, and
+Ubuntu minutes are ten times cheaper.
 
-The toolchain is whatever stable the runner image ships — nothing is pinned. Combined
-with `-D warnings` that means a new Rust release can turn CI red without anyone
-touching the code, and the failure lands on whoever pushes next. Pinning it is
-`messreq-0cp`.
+The toolchain is pinned in `rust-toolchain.toml` at the repository root: `channel =
+"1.97.1"`, components `clippy` and `rustfmt`. rustup reads that file on a contributor's
+machine and on the CI runner alike, so the clippy and rustfmt you run locally are the
+same ones the gates run — the CI step is now `rustup show active-toolchain`, not `rustup component
+add`. Without the pin, `-D warnings` would turn main red the week a new stable lands,
+with the failure landing on whoever pushes next. The cost is that the bump is manual:
+nothing in the repository flags the version as stale. `rustup check` prints the current
+stable — raise `channel` when all four gates still pass on it.
 
 You can build while the TUI is running — cargo writes a new file and swaps it in, and the running process keeps living on the old inode (and therefore on the old code, until you restart it).
 
-`cargo test` runs 198 unit tests plus 7 that are `#[ignore]`d because they drive a real tmux server (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff, terminal backends (including automatic backend detection, the `MESSREQ_TERMINAL` override, and the tmux pane-vs-window placement decision — see `terminal::tmux`, messreq-e5t.7), and building and escaping the tab command. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
+`cargo test` runs 224 unit tests plus 7 that are `#[ignore]`d because they drive a real tmux server (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff, the blank-session system context and the `--append-system-prompt` argument it rides in (messreq-a7n), terminal backends (including automatic backend detection, the `MESSREQ_TERMINAL` override, and the tmux pane-vs-window placement decision — see `terminal::tmux`, messreq-e5t.7), and building and escaping the tab command. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
 
 ```bash
 messreq                    # TUI
@@ -150,7 +165,7 @@ MESSREQ_OPEN_MODE=window messreq …  # tmux only: force new-window instead of t
 ## External dependencies and environment
 
 - **`glab`** — all GitLab access goes through `glab api <path>` using the already authenticated CLI; there is no HTTP client of our own. The host is passed explicitly on every call, because under launchd (no git repo in cwd) glab would fall back to gitlab.com with the wrong token. Resolution order in `gitlab_host()`: `GITLAB_HOST` → glab's configuration (`config.yml`: the instance under `hosts` that has a token; the top-level `host` key is no good for this — glab leaves `gitlab.com` there even after you log in to a self-hosted instance) → `gitlab.com`. The result is cached in a `OnceLock`, since the function is called on every request. Self-hosted instances usually need a VPN.
-- **`it2`** — the iTerm2 CLI: `tab new -c`, `session list --json`, `session send`, `session focus`.
+- **`it2`** — the iTerm2 CLI: `tab new -c`, `session list --json`, `session send`, `session focus`. Needed only by the iTerm2 backend; the tmux backend drives `tmux` itself (see `src/terminal/`).
 - **`claude`** — started inside the tab, in the local checkout of the project the MR belongs to (see "Config" below).
 - The tab command is a POSIX script wrapped in `sh -c '…'`, so the tab's own shell (fish/zsh/bash) does not matter. Escaping is done by `shq`: single quotes, with `'` and `\` lifted outside them, because inside single quotes fish treats a backslash as an escape while POSIX does not.
 
@@ -182,7 +197,7 @@ Everything lives in `~/.local/state/messreq/`:
 | `seen.json` | `"pid!iid"` → the last seen `updated_at`; the 🆕 badge is computed from it |
 | `state.json` | a snapshot of MR "fingerprints" for `--notify` (diffed pass to pass) |
 | `heartbeat` | an empty file whose mtime is refreshed on every TUI tick |
-| `prompts/<sid>.txt` | the prompt text; `prompts/<sid>.started` is the launch sentinel |
+| `prompts/<sid>.txt` | the prompt text; `prompts/<sid>.sys` is the blank-session system context (messreq-a7n) and `prompts/<sid>.started` is the launch sentinel |
 
 An empty `seen.json`/`state.json` on first run is treated as a "quiet baseline": the current state is recorded without highlighting and without notifications.
 
@@ -200,13 +215,13 @@ An empty `seen.json`/`state.json` on first run is treated as a "quiet baseline":
 
 The id of the new iTerm session is derived by diffing `it2 session list` snapshots taken before and after.
 
-**Prompt modes (`PromptMode`).** Enter gives `Surface` (for your own MR: "get it to approved"; for someone else's: a shallow review) for a new session, or the resume prompt (below) for reopening one. Shift+Enter (kitty keyboard protocol, if the terminal supports it) or `p` opens the menu: `MyThreads`, `Deep`, `Blank`. `build_prompt` assembles the prompt from a header, a task block, and a footer with glab hints; `sanitize_prompt` strips control characters but **keeps** newlines.
+**Prompt modes (`PromptMode`).** Enter gives `Surface` (for your own MR: "get it to approved"; for someone else's: a shallow review) for a new session, or the resume prompt (below) for reopening one. Shift+Enter (kitty keyboard protocol, if the terminal supports it) or `p` opens the menu: `MyThreads`, `Deep`, `Blank`. `build_prompt` assembles the prompt from a header, a task block, and a footer with glab hints; `sanitize_prompt` strips control characters but **keeps** newlines. `Blank` gets no prompt at all, but it is not blind: `start_work` passes the MR context to `claude --append-system-prompt` instead (`build_system_context_line` — the `blank_system` template plus the footer, written to `prompts/<sid>.sys`), so the first thing you type in a blank session can be the question rather than the context (messreq-a7n). It rides in the system prompt rather than a first user message precisely to keep the session blank — nothing is asked, nothing is answered. Only a brand-new blank session gets it; `--resume` re-attaches to a session that already has the context in its history, so no flag is passed there.
 
-**Prompt templates.** The prompt text is not baked into the code: each piece is a template, looked up first as `~/.config/messreq/prompts/<name>.md`, then `<name>.txt` (back-compat for `.txt` customizations from before messreq-6x9), and only then falling back to the built-in default. The built-ins are Markdown files under `prompts/` at the repository root, pulled into the `TPL_*` constants (indexed by the `BUILTIN_PROMPTS` table in `prompt/builtin.rs`) with `include_str!` — editing a default prompt is a Markdown edit, not a `src/` edit. The names are `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `footer`. The syntax is `{var}` substitution plus a non-nesting `[[if var]]…[[else]]…[[end]]` block (the condition is "the variable is non-empty"); there is no template engine, just ~60 lines in `prompt/engine.rs`. The `threads` variable is an already-rendered list of threads and `count` is how many there are; which threads end up there is decided by the code — for your own MR in Surface mode (and for the resume prompt) it is every unresolved thread, otherwise only the threads you took part in. The per-thread line format (`threads_block`) stays in the code, because that is data rendering rather than task wording. `messreq --dump-prompts` writes the defaults out to the config directory: a name that already has a `.md` file, or only a legacy `.txt` file, is left alone — writing a fresh `.md` next to an existing `.txt` would silently stop the `.txt` customization from being read, since `.md` is checked first.
+**Prompt templates.** The prompt text is not baked into the code: each piece is a template, looked up first as `~/.config/messreq/prompts/<name>.md`, then `<name>.txt` (back-compat for `.txt` customizations from before messreq-6x9), and only then falling back to the built-in default. The built-ins are Markdown files under `prompts/` at the repository root, pulled into the `TPL_*` constants (indexed by the `BUILTIN_PROMPTS` table in `prompt/builtin.rs`) with `include_str!` — editing a default prompt is a Markdown edit, not a `src/` edit. The names are `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `blank_system`, `footer`. The syntax is `{var}` substitution plus a non-nesting `[[if var]]…[[else]]…[[end]]` block (the condition is "the variable is non-empty"); there is no template engine, just ~60 lines in `prompt/engine.rs`. The `threads` variable is an already-rendered list of threads and `count` is how many there are; which threads end up there is decided by the code — for your own MR in Surface mode (and for the resume prompt) it is every unresolved thread, otherwise only the threads you took part in. The per-thread line format (`threads_block`) stays in the code, because that is data rendering rather than task wording. `blank_system` additionally gets `header` — the already rendered `header` template — so an override can place the MR facts anywhere in it without restating every field. `messreq --dump-prompts` writes the defaults out to the config directory: a name that already has a `.md` file, or only a legacy `.txt` file, is left alone — writing a fresh `.md` next to an existing `.txt` would silently stop the `.txt` customization from being read, since `.md` is checked first.
 
 **Resume prompt (`build_resume_prompt_line`, `resume_work`).** Reopening a session (`claude --resume <sid> "$(cat FILE)"` — the CLI accepts a prompt positionally alongside `--resume`, confirmed against the binary since it isn't documented either way) sends a prompt built from what changed since `--notify`'s last snapshot, not a repeat of the full context. `notify::last_fingerprint` reads the same `state.json` snapshot `--notify` maintains, and `notify::changes_since` (pure, mirrors what `diff` reports for notifications, and shares its `newly_added` set-diff helper) turns the previous fingerprint plus the current `MergeRequest` into a short bullet list — new approvals, the pipeline moving, new unresolved threads, the turn switching to you. The `resume` template gets two extra placeholders: `changes` (the rendered bullets, empty if nothing moved or nothing is known — e.g. `--notify` has never run) and `elapsed` (how long ago `state.json` was last written, from `notify::state_age`). `elapsed` deliberately does **not** come from `seen.json`'s last-acked `updated_at`: that dates the MR's own last change, not your visit or the snapshot the delta is based on, and pairing it with `changes` would silently date-mismatch the two.
 
-**Notifications (`--notify`).** Driven by the launchd agent `~/Library/LaunchAgents/com.nbogomolov.mrdash.notify.plist` every 300 seconds (keep the interval equal to `REFRESH_SECS`: `--notify` does its own full `load()`, so running it more often just duplicates the TUI's fetching and adds memory spikes from the child `glab` processes). Two safeguards against background noise and false positives:
+**Notifications (`--notify`).** A single pass, meant to be run on a timer — on macOS by a launchd agent invoking the binary every 300 seconds (the agent this machine uses is described under "Naming" above). Keep whatever interval you pick equal to `REFRESH_SECS`: `--notify` does its own full `load()`, so running it more often just duplicates the TUI's fetching and adds memory spikes from the child `glab` processes. Two safeguards against background noise and false positives:
 - if the heartbeat is stale (>120 s) the process exits **before** touching GitLab — the TUI/GUI are closed, so there is nobody to notify;
 - an empty `load` response is treated as a failure (VPN/token), not as "every MR got closed": the snapshot is not overwritten and no avalanche of "merged" notifications goes out.
 
