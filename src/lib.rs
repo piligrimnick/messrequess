@@ -16,7 +16,8 @@
 //! where the local checkouts are, `prompt` builds the text for Claude and `work`
 //! opens the session — through the `terminal` backend seam (iTerm2 by default,
 //! tmux as an alternative, see `terminal`'s module doc). `ui` draws the
-//! dashboard, `notify` runs the background pass. `cli` is the `--help`/unknown-
+//! dashboard and runs a notification pass after each load, `notify` decides
+//! and delivers what that pass reports. `cli` is the `--help`/unknown-
 //! flag argument parsing that has to work before any of that — before `glab`
 //! is ever called. `migrate` is a transitional shim carrying old `mrdash`
 //! state/config directories forward to their `messreq` names (messreq-c9j).

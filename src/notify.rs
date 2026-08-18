@@ -1,5 +1,10 @@
-//! Notification mode (`--notify`): one poll, diffed against the snapshot on
-//! disk, delivered through terminal-notifier or osascript.
+//! Notifications: a set of MRs diffed against the snapshot on disk, delivered
+//! through terminal-notifier or osascript, and recorded as the new snapshot.
+//!
+//! The dashboard runs a pass itself after every successful load (see
+//! `notify_pass`), so notifications need no setup and arrive while it is
+//! open. `notify_mode` is the same pass with its own fetch in front, kept as
+//! the `--notify` run mode for the sibling `mrdash-gui` (messreq-dm4.1).
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -34,12 +39,12 @@ fn fingerprint(mr: &MergeRequest) -> serde_json::Value {
     })
 }
 
-/// The fingerprint last recorded for one MR (by `--notify`), if any. Used by
-/// the resume prompt (see `prompt::build_resume_prompt_line`) to say what
-/// moved since the session was left, instead of restating the MR from
-/// scratch. Reuses `fingerprint`'s shape and `state_path()` — the same
-/// on-disk snapshot `--notify` diffs against, just read for one key instead
-/// of compared wholesale.
+/// The fingerprint last recorded for one MR (by whichever process ran the
+/// last pass — the TUI itself, or `--notify`), if any. Used by the resume
+/// prompt (see `prompt::build_resume_prompt_line`) to say what moved since
+/// the session was left, instead of restating the MR from scratch. Reuses
+/// `fingerprint`'s shape and `state_path()` — the same on-disk snapshot a
+/// pass diffs against, just read for one key instead of compared wholesale.
 pub(crate) fn last_fingerprint(key: &str) -> Option<serde_json::Value> {
     let snapshot: Snapshot = std::fs::read_to_string(state_path())
         .ok()
@@ -51,9 +56,9 @@ pub(crate) fn last_fingerprint(key: &str) -> Option<serde_json::Value> {
 /// `changes_since` compares against is. This is the honest reference point
 /// for the resume prompt's "elapsed" — `seen.json`'s last-acked `updated_at`
 /// looks tempting but measures the wrong thing (when the MR itself last
-/// changed, not when `--notify` last captured a snapshot of it), which would
-/// silently mismatch the delta it is displayed next to. `None` if `--notify`
-/// has never written the file yet, or its mtime can't be read.
+/// changed, not when the last pass captured a snapshot of it), which would
+/// silently mismatch the delta it is displayed next to. `None` if no pass has
+/// written the file yet, or its mtime can't be read.
 pub(crate) fn state_age() -> Option<String> {
     let secs = std::fs::metadata(state_path())
         .and_then(|m| m.modified())
@@ -295,47 +300,113 @@ fn notify(subtitle: &str, message: &str, url: Option<&str>, has_tn: bool) {
     }
 }
 
-/// Poll GitLab, compare against the snapshot on disk, send notifications about
-/// the changes, rewrite the snapshot. A single pass — run on a schedule
-/// (launchd) once every 5 minutes.
+/// What one pass decided to do: the notifications to deliver, and the
+/// snapshot to write back (`None` = leave `state.json` exactly as it is).
+struct Plan {
+    deliver: Vec<Notification>,
+    persist: Option<Snapshot>,
+}
+
+/// Turn `compute`'s result into the two decisions a pass acts on. Pure, so
+/// both safeguards are checkable without touching the disk or a notifier:
+///
+/// - an empty response persists nothing and delivers nothing (`compute`
+///   returns `None` — see its doc for why an empty list reads as a failed
+///   request rather than "every MR closed");
+/// - a pass with no previous snapshot persists the baseline and delivers
+///   nothing, so a first run is quiet.
+///
+/// The `previous.is_none()` gate here is deliberately redundant with
+/// `compute`, which already returns no messages in that case. It is the
+/// safeguard that survives a future change to how the diff is built.
+fn plan(items: &[MergeRequest], previous: Option<&Snapshot>) -> Plan {
+    match compute(items, previous) {
+        None => Plan {
+            deliver: Vec::new(),
+            persist: None,
+        },
+        Some((msgs, current)) => Plan {
+            deliver: if previous.is_some() { msgs } else { Vec::new() },
+            persist: Some(current),
+        },
+    }
+}
+
+/// Deliver a batch of notifications. Probes for terminal-notifier once for
+/// the whole batch, and not at all when there is nothing to send.
+fn deliver_all(msgs: &[Notification]) {
+    if msgs.is_empty() {
+        return;
+    }
+    let has_tn = Command::new("terminal-notifier")
+        .arg("-help")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    for n in msgs {
+        notify(&n.subtitle, &n.message, n.url.as_deref(), has_tn);
+    }
+}
+
+/// One notification pass over an already fetched list of MRs, against the
+/// snapshot stored at `path`: read the previous snapshot, decide (`plan`),
+/// deliver, record the new snapshot.
+///
+/// The path is a parameter rather than `state_path()` so the tests below can
+/// exercise the real read/decide/write sequence against a throwaway file
+/// instead of the machine's own state.
+fn pass_at(path: &std::path::Path, items: &[MergeRequest]) {
+    let previous: Option<Snapshot> = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok());
+
+    let Plan {
+        deliver: msgs,
+        persist,
+    } = plan(items, previous.as_ref());
+
+    deliver_all(&msgs);
+
+    let Some(current) = persist else {
+        return;
+    };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(
+        path,
+        serde_json::to_string_pretty(&current).unwrap_or_default(),
+    );
+}
+
+/// One notification pass over MRs the caller has already fetched: diff them
+/// against `state.json`, deliver what changed, record the new snapshot.
+///
+/// Two callers, one loader each: `notify_mode` below (which fetches for
+/// itself) and the TUI's poll cycle (`ui::app::App::poll_pending`), which
+/// already has fresh items in hand and must not fetch them a second time —
+/// that duplicate fetch is exactly what messreq-dm4.1 removed.
+///
+/// Whoever calls this also decides what "since last time" means for the
+/// resume prompt: `prompt::build_resume_prompt_line` dates its delta against
+/// the same file (`last_fingerprint` / `state_age`).
+pub(crate) fn notify_pass(items: &[MergeRequest]) {
+    pass_at(&state_path(), items);
+}
+
+/// Poll GitLab, compare against the snapshot on disk, send notifications
+/// about the changes, rewrite the snapshot. A single pass, run on a schedule.
+///
+/// The TUI notifies on its own now (messreq-dm4.1), so this mode is no longer
+/// needed alongside it. It stays for the sibling `mrdash-gui`, which shares
+/// the heartbeat and the state files but has no notifications of its own.
 pub fn notify_mode(me: &str) {
     // We poll GitLab only while the TUI or the GUI is open (a fresh heartbeat).
     // Both closed → exit quietly, no background polling.
     if !heartbeat_fresh(HEARTBEAT_STALE_SECS) {
         return;
     }
-    let items = GitlabForge.open_merge_requests(me);
-    let path = state_path();
-
-    let prev: Option<Snapshot> = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok());
-    let had_previous = prev.is_some();
-
-    let Some((msgs, current)) = compute(&items, prev.as_ref()) else {
-        // Empty response: treated as a failed request, not "every MR closed".
-        // Do not touch the snapshot and do not send a false avalanche.
-        return;
-    };
-
-    if had_previous {
-        let has_tn = Command::new("terminal-notifier")
-            .arg("-help")
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false);
-        for n in &msgs {
-            notify(&n.subtitle, &n.message, n.url.as_deref(), has_tn);
-        }
-    }
-
-    if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
-    }
-    let _ = std::fs::write(
-        &path,
-        serde_json::to_string_pretty(&current).unwrap_or_default(),
-    );
+    notify_pass(&GitlabForge.open_merge_requests(me));
 }
 
 #[cfg(test)]
@@ -615,5 +686,92 @@ mod tests {
 
         assert_eq!(msgs.len(), 1);
         assert_eq!(msgs[0].subtitle, "5 MR changes");
+    }
+
+    // The pass itself (messreq-dm4.1): the TUI and `--notify` now share
+    // `pass_at`, so the two safeguards have to hold in the shared code and
+    // not just in `compute`.
+
+    #[test]
+    fn plan_on_a_first_pass_persists_the_baseline_and_delivers_nothing() {
+        let items = vec![mr(1, false, &[], CiStatus::Success, true)];
+        let plan = plan(&items, None);
+
+        assert!(plan.deliver.is_empty());
+        assert_eq!(plan.persist.expect("baseline recorded").len(), 1);
+    }
+
+    #[test]
+    fn plan_on_an_empty_response_persists_nothing_and_delivers_nothing() {
+        let previous = snapshot(&[mr(1, true, &[], CiStatus::Success, false)]);
+        let plan = plan(&[], Some(&previous));
+
+        assert!(plan.deliver.is_empty());
+        assert!(
+            plan.persist.is_none(),
+            "an empty response must leave the snapshot alone"
+        );
+    }
+
+    #[test]
+    fn plan_delivers_the_diff_once_a_previous_snapshot_exists() {
+        let previous = snapshot(&[]);
+        let items = vec![mr(1, false, &[], CiStatus::Success, false)];
+        let plan = plan(&items, Some(&previous));
+
+        assert_eq!(plan.deliver.len(), 1);
+        assert!(plan.deliver[0].subtitle.contains("New MR to review"));
+        assert!(plan.persist.is_some());
+    }
+
+    /// A scratch path for `pass_at`, under a per-test temp directory that
+    /// does not exist yet — so this also checks that the pass creates the
+    /// state directory on the way.
+    fn temp_state_path(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "messreq-test-state-{label}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir.join("state.json")
+    }
+
+    // The two `pass_at` tests below deliberately use inputs whose plan
+    // delivers nothing (a first pass, and an empty response). That is what
+    // makes them runnable: delivery shells out to terminal-notifier /
+    // osascript, which is not something a unit test can stand in for.
+
+    #[test]
+    fn pass_writes_the_snapshot_when_there_was_none() {
+        let path = temp_state_path("first");
+        assert!(!path.exists());
+
+        pass_at(&path, &[mr(1, true, &[], CiStatus::Success, false)]);
+
+        let written: Snapshot =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("state.json written"))
+                .expect("valid JSON");
+        assert_eq!(written.len(), 1);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn pass_leaves_the_snapshot_untouched_on_an_empty_response() {
+        let path = temp_state_path("empty");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let before = "{\"1!1\":{\"iid\":1}}";
+        std::fs::write(&path, before).unwrap();
+
+        pass_at(&path, &[]);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            before,
+            "an empty response must not overwrite the snapshot"
+        );
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

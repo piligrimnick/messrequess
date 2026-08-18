@@ -299,7 +299,13 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Result<()> {
     loop {
-        touch_heartbeat(); // the signal to `--notify` that the app is open
+        // The signal to `--notify` that a dashboard is open. The TUI sends
+        // its own notifications now (messreq-dm4.1) and no longer needs the
+        // mode for itself, but it keeps refreshing the heartbeat: the sibling
+        // mrdash-gui still relies on `--notify`, and that mode refuses to
+        // touch GitLab unless *some* dashboard is open. Dropping the touch
+        // here would silence it for anyone whose GUI is closed.
+        touch_heartbeat();
         app.poll_pending();
         if app.is_loading() {
             app.spinner = app.spinner.wrapping_add(1);

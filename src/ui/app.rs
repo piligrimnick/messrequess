@@ -163,6 +163,17 @@ impl App {
                 }
                 self.rebuild_order_from(selected_key);
                 self.prune_state();
+                // Notifications are the dashboard's own job (messreq-dm4.1):
+                // the same diff-deliver-record pass `--notify` runs after its
+                // own load, on the items just fetched instead of a second
+                // copy of them. Guarded here rather than inside `notify_pass`
+                // because the mode still has to run unconditionally: in
+                // read-only mode (`--snapshot`) a pass would both fire real
+                // notifications and rewrite `state.json`, which is the file
+                // the resume prompt dates its "what changed" delta against.
+                if !self.read_only {
+                    crate::notify::notify_pass(&self.items);
+                }
                 self.pending = None;
             }
         }

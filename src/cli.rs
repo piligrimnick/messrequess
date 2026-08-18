@@ -35,7 +35,10 @@ Run modes:
                    merge request !<iid>
   --dump-prompts   write the built-in prompt templates to
                    ~/.config/messreq/prompts/ (existing files are left alone)
-  --notify         run one notification pass (used by the launchd agent)
+  --notify         run one notification pass and exit; the TUI already
+                   notifies on its own, so this is only for the sibling
+                   mrdash-gui, which shares the state files but has no
+                   notifications of its own
   --help, -h       print this help and exit
 
 Environment:
