@@ -1,0 +1,19 @@
+# The toolchain CI runs and the toolchain you get locally are the same one.
+#
+# CI runs `cargo clippy --all-targets --locked -- -D warnings`, so every lint a
+# new Rust release adds is a build failure, and rustfmt's output shifts between
+# releases too. Unpinned, a stable released six weeks from now turns a green main
+# red without anyone touching the code, and the failure lands on whoever pushes
+# next — a first-time contributor, once this repository is public.
+#
+# rustup reads this file both on a contributor's machine and on the CI runner, so
+# `cargo fmt --check` and clippy give the same answer in both places. It also
+# means a local build is pinned to this version; `cargo +stable …` opts out of it
+# for a one-off.
+#
+# The cost is a manual bump — nothing in the repository notices that this number
+# has gone stale. `rustup check` prints the current stable; raise the channel when
+# the four CI gates still pass on it.
+[toolchain]
+channel = "1.97.1"
+components = ["clippy", "rustfmt"]

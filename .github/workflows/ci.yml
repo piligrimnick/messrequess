@@ -31,12 +31,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # The runner image ships a stable toolchain; clippy and rustfmt are added
-      # explicitly so the job does not depend on which components the image has.
+      # The version and the components come from rust-toolchain.toml at the
+      # repository root, so this job and a contributor's machine run the same
+      # clippy and the same rustfmt — an unpinned runner image would fail the
+      # `-D warnings` gate on its own the week a new stable lands. `rustup show`
+      # is what installs that toolchain; the proxies below then use it.
       - name: Set up the toolchain
         id: toolchain
         run: |
-          rustup component add clippy rustfmt
+          rustup show active-toolchain
           rustc --version
           cargo --version
           cargo clippy --version
