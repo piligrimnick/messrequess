@@ -70,17 +70,17 @@ Two artifacts live outside the repository, on the machine that runs the tool, so
 
 Anyone setting this up on another machine has to do both steps themselves; nothing in the build does it.
 
-## Status: preparing to go public
+## Status: public
 
-The repository is private, but the goal is open source plus a brew formula. The core (the MR model, `compute_action`, rendering, notifications) is generic; the glue used to be tied to one specific machine. Most of that is already fixed: the repository path comes from a config file, the tab command is POSIX, the default GitLab host is resolved from glab's own configuration, and the prompts are overridable templates.
+The repository is public at <https://github.com/piligrimnick/messrequess>. What is still ahead is a brew formula (`messreq-hk6`) and release binaries (`messreq-9vx.2`); the core — the MR model, `compute_action`, rendering, notifications — was always generic, and the glue that used to be tied to one machine is fixed: the repository path comes from a config file, the tab command is POSIX, the default GitLab host is resolved from glab's own configuration, and the prompts are overridable templates.
 
-Local `main` carries nothing internal. Its history was squashed into `8a6c5e1` on 2026-08-10, and neither the internal GitLab host nor the personal checkout path survives anywhere in it — verify it the same way: `git log -S'<internal-host>' --oneline HEAD`, and the same search for `/Users/<name>`. Both print nothing. That is why `messreq-laj` is closed.
+`main` carries nothing internal. Its history was squashed into `8a6c5e1` on 2026-08-10, and neither the internal GitLab host nor the personal checkout path survives anywhere in it — verify it the same way: `git log -S'<internal-host>' --oneline HEAD`, and the same search for `/Users/<name>`. Both print nothing. That is why `messreq-laj` is closed.
 
-The remote is a different question, and it is the one open P0:
+The remote was the harder half, and it is settled. `messreq-9i7` recorded that the dirty history had been pushed before the squash and force-pushed over afterwards — which hides commits without deleting them, so GitHub kept serving them by SHA. The owner resolved it by deleting the repository and creating it again, taking only the squashed `main` and the beads Dolt data across. The pre-squash SHAs now return "No commit found" from the API where they returned 200 before, and the old history is kept offline as a git bundle outside the repository. Do not re-push anything that predates the squash.
 
-- `messreq-9i7` — the dirty history was pushed to GitHub before the squash and force-pushed over afterwards. A force-push hides commits, it does not delete them: GitHub keeps the objects it made unreachable and still serves them by SHA, so those commits — internal host, personal path, Russian commit messages — are one API call away from anyone who holds a SHA. Confirmed against the API, not inferred.
+One exposure is still open, and it is not in the git history:
 
-**Do not flip the repository to public until `messreq-9i7` is resolved.** The issue holds the affected SHAs and the options; which one to take is a call for the repository owner, not something this file decides.
+- `messreq-s7p` (P1) — the beads data goes to this same public repository as the git ref `refs/dolt/data`, and that data still holds the strings the squash removed from the commits: the internal host and the personal path. `git ls-remote origin 'refs/dolt/*'` shows the ref. The commits are clean; the tracker is not. Weigh this before pointing a wider audience at the repository.
 
 ## Issues are tracked in beads
 
