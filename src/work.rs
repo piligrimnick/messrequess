@@ -244,13 +244,33 @@ fn new_session_args(
 /// messreq-a7n) so that the first thing you type can be the question rather
 /// than the context. Every other mode already carries that context inside
 /// its own prompt, so it gets the flag nowhere.
+/// The name a session carries. It goes to `claude --name`, from which Claude
+/// Code sets the terminal title, and it is the tmux window name; it is also
+/// stored in `worktabs.json` and reused when a session is resumed.
+///
+/// The name is the merge request's own URL. A title that *is* the address
+/// tells you which project a tab belongs to without opening it, which a bare
+/// `!123` cannot when several projects have sessions open at once, and a
+/// terminal that linkifies what it renders can act on it directly.
+///
+/// The URL comes from the provider response and can be empty (`base_from`
+/// defaults it to an empty string), which would leave a session with no name
+/// at all. `MR !<number>` is the fallback for that case.
+fn session_name(mr: &MergeRequest) -> String {
+    if mr.url.is_empty() {
+        format!("MR !{}", mr.number())
+    } else {
+        mr.url.clone()
+    }
+}
+
 pub(crate) fn start_work(
     mr: &MergeRequest,
     mode: PromptMode,
 ) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = uuid();
-    let name = format!("MR !{}", mr.number());
+    let name = session_name(mr);
     let prompt = build_prompt_line(mr, mode);
 
     let prompt_file = (!prompt.is_empty()).then(|| {
@@ -298,7 +318,7 @@ pub(crate) fn resume_work_with_prompt(
 ) -> Result<serde_json::Value, WorkError> {
     let work_dir = work_dir_for_mr(mr)?;
     let sid = entry["claude_session"].as_str().unwrap_or("").to_string();
-    let default = format!("MR !{}", mr.number());
+    let default = session_name(mr);
     let name = entry["name"].as_str().unwrap_or(&default).to_string();
 
     let args = if prompt.is_empty() {
@@ -423,6 +443,56 @@ pub(crate) fn deliver_to_live_session(claude_session: &str, iterm_session: &str,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::model::{CiStatus, ForgeId, Mergeable, ReviewState, Sev};
+
+    fn mr_with_url(url: &str) -> MergeRequest {
+        MergeRequest {
+            id: ForgeId::GitLab {
+                project_id: 12,
+                iid: 418,
+            },
+            path: "acme/backend".to_string(),
+            url: url.to_string(),
+            title: "test MR".to_string(),
+            author: "author".to_string(),
+            draft: false,
+            conflicts: false,
+            merge_status: Mergeable::Unknown,
+            pipeline: CiStatus::Success,
+            approved_by: vec![],
+            reviewers: vec![],
+            unresolved: vec![],
+            mine: true,
+            queue: None,
+            my_review: ReviewState::None,
+            created_at: "2024-01-01T00:00:00.000Z".to_string(),
+            updated_at: "2024-01-01T00:00:00.000Z".to_string(),
+            action_label: String::new(),
+            action_sev: Sev::Neutral,
+        }
+    }
+
+    #[test]
+    fn session_name_is_the_merge_request_url() {
+        let url = "https://gitlab.example.com/acme/backend/-/merge_requests/418";
+        assert_eq!(session_name(&mr_with_url(url)), url);
+    }
+
+    #[test]
+    fn session_name_falls_back_to_the_number_when_the_url_is_empty() {
+        // `base_from` defaults a missing `web_url` to "", which would otherwise
+        // leave the tab and the tmux window with no name at all.
+        assert_eq!(session_name(&mr_with_url("")), "MR !418");
+    }
+
+    #[test]
+    fn session_name_survives_shell_quoting_intact() {
+        // The name reaches claude through `shq` inside `new_session_args`; a
+        // URL carries `/` and `:`, which single quotes pass through unchanged.
+        let url = "https://gitlab.example.com/acme/backend/-/merge_requests/418";
+        assert_eq!(shq(&session_name(&mr_with_url(url))), format!("'{url}'"));
+    }
 
     #[test]
     fn shq_wraps_plain_string() {
