@@ -30,7 +30,7 @@
 //! parallel test threads and could accidentally pick up whatever real pane
 //! the test binary itself happens to be running in.
 //!
-//! `list_sessions` has to look at the whole server (`-a`), not just
+//! `agent_sessions` has to look at the whole server (`-a`), not just
 //! `SESSION`: bindings recorded before this fix point at pane ids inside the
 //! dedicated session, and those pane ids are still valid, but new windows
 //! after the fix can land in any session. The 🔨/💤 badges depend on seeing
@@ -99,11 +99,11 @@ use std::process::{Command, Output};
 
 use crate::error::WorkError;
 
-use super::{OpenMode, TerminalBackend};
+use super::{agent, OpenMode, TerminalBackend};
 
 /// The tmux session windows fall back to when messreq is running outside
 /// tmux and has no current session to target. Fixed rather than
-/// configurable: one well-known name is what lets `list_sessions`/`open`
+/// configurable: one well-known name is what lets `agent_sessions`/`open`
 /// agree on where to look without threading extra config through.
 const SESSION: &str = "messreq";
 
@@ -375,6 +375,39 @@ enum Placement {
     NewSession,
 }
 
+/// Pane ids that have an agent running, out of `list-panes -a -F "#{pane_id}
+/// #{pane_current_command}"` output.
+///
+/// Pure, so the rule is testable without a tmux server — `agent_sessions`
+/// below is the impure half that produces the text. A line tmux gave no
+/// command for (`%0` alone) yields no pane id at all, which reads as free;
+/// see `terminal::agent` for why every uncertain case falls that way.
+///
+/// One verified sharp edge in `#{pane_current_command}`: on macOS it names
+/// the pane's *own* process, not the deepest foreground one. A pane started
+/// as `sh -c 'echo hi > f; sleep 300'` reports `bash` — the wrapping shell —
+/// even while `sleep` is what is actually running, because a compound
+/// command keeps the shell alive above it. That does not affect messreq's
+/// own launches: `work::claude_script` ends in `exec claude …`, so the shell
+/// is replaced and tmux reports the agent (checked against tmux 3.6 on a
+/// throwaway `-L` socket, with and without the `exec`). And when it does
+/// bite, it reports a shell — free — which is the direction this whole
+/// mechanism is built to fail in.
+///
+/// `#{pane_current_command}` is used here rather than the `ps` probe the
+/// iTerm2 backend needs, for two reasons: tmux already tracks this, so there
+/// is no child process to spawn, and it is the same answer on Linux, where
+/// this is the only backend that works (messreq-m3d) and where `ps`'s macOS
+/// column behaviour cannot be checked from here.
+fn panes_with_an_agent(list_panes_output: &str) -> HashSet<String> {
+    list_panes_output
+        .lines()
+        .filter_map(|line| line.trim().split_once(' '))
+        .filter(|(_, command)| agent::is_agent_command(command))
+        .map(|(pane_id, _)| pane_id.to_string())
+        .collect()
+}
+
 impl TerminalBackend for TmuxBackend {
     fn open(&self, cmd: &str, _sid: &str, name: &str) -> Result<String, WorkError> {
         // Inside tmux, the session messreq is running in obviously already
@@ -417,7 +450,7 @@ impl TerminalBackend for TmuxBackend {
         Ok(pane_id)
     }
 
-    fn list_sessions(&self) -> Option<HashSet<String>> {
+    fn agent_sessions(&self) -> Option<HashSet<String>> {
         // Server-wide (`-a`), not scoped to SESSION: `open` can now land
         // windows in whichever session messreq itself is running in, so
         // live panes are scattered across sessions messreq doesn't own.
@@ -425,20 +458,26 @@ impl TerminalBackend for TmuxBackend {
         // dedicated SESSION — those pane ids are still valid and still need
         // to show up here, so the scope has to cover every session on the
         // server, not just the one messreq manages by name.
-        let out = self.tmux(["list-panes", "-a", "-F", "#{pane_id}"]).ok()?;
+        //
+        // `#{pane_current_command}` rides along in the same call
+        // (messreq-e5t.8): tmux already tracks the pane's foreground process,
+        // so unlike iTerm2 this backend needs no `ps` at all. A pane whose
+        // command has dropped back to a shell is a pane with no agent in it —
+        // which is what `panes_with_an_agent` filters on.
+        let out = self
+            .tmux([
+                "list-panes",
+                "-a",
+                "-F",
+                "#{pane_id} #{pane_current_command}",
+            ])
+            .ok()?;
         if !out.status.success() {
             // Most commonly no tmux server running at all — no panes
             // anywhere is not a failure to report as a capability gap.
             return Some(HashSet::new());
         }
-        Some(
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-                .map(str::to_string)
-                .collect(),
-        )
+        Some(panes_with_an_agent(&String::from_utf8_lossy(&out.stdout)))
     }
 
     /// Literal text, then Enter as its own keystroke — the tmux idiom that
@@ -504,6 +543,48 @@ impl TerminalBackend for TmuxBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Captured from a real tmux 3.6 on a throwaway `-L` socket: one pane
+    /// running `sleep 300`, one that fell back to its shell.
+    const LIST_PANES_SAMPLE: &str = "\
+%0 sleep
+%1 zsh
+";
+
+    #[test]
+    fn panes_with_an_agent_skips_panes_that_fell_back_to_a_shell() {
+        // The tmux half of messreq-e5t.8: a pane whose command exited drops
+        // back to the shell instead of dying, and used to keep counting as a
+        // live session to hand a queue line to.
+        let panes = panes_with_an_agent(LIST_PANES_SAMPLE);
+        assert!(
+            panes.contains("%0"),
+            "the running pane should count: {panes:?}"
+        );
+        assert!(
+            !panes.contains("%1"),
+            "a pane sitting at its shell should not: {panes:?}"
+        );
+    }
+
+    #[test]
+    fn panes_with_an_agent_recognises_any_command_not_just_claude() {
+        let panes = panes_with_an_agent("%2 claude\n%3 codex\n%4 node\n%5 my-own-agent\n");
+        assert_eq!(
+            panes,
+            ["%2", "%3", "%4", "%5"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<HashSet<String>>()
+        );
+    }
+
+    #[test]
+    fn panes_with_an_agent_ignores_lines_tmux_gave_no_command_for() {
+        // "Cannot answer" resolves to free, never to occupied — see
+        // `terminal::agent`.
+        assert!(panes_with_an_agent("%0\n\n   \n").is_empty());
+    }
 
     #[test]
     fn default_backend_uses_the_users_own_tmux_socket() {
@@ -596,12 +677,21 @@ mod tests {
             "pane id should look like tmux's %N, got {pane_id:?}"
         );
 
+        // Let the pane settle first: for a moment after `new-session`,
+        // `#{pane_current_command}` still names the shell tmux launched the
+        // command through, before `sh` execs `cat` over itself. Verified on
+        // tmux 3.6 — the very first `list-panes` after creation says `bash`,
+        // the next one says `cat`. In the dashboard that transient only
+        // means a just-opened session shows 💤 instead of 🔨 until the next
+        // refresh, which is the harmless direction; here it would just make
+        // the test flaky.
+        std::thread::sleep(std::time::Duration::from_millis(300));
         let sessions = backend
-            .list_sessions()
-            .expect("list_sessions should return Some on this backend");
+            .agent_sessions()
+            .expect("agent_sessions should return Some on this backend");
         assert!(
             sessions.contains(&pane_id),
-            "the pane just opened should be in list_sessions: {sessions:?}"
+            "the pane just opened should be in agent_sessions: {sessions:?}"
         );
 
         assert!(
@@ -633,7 +723,7 @@ mod tests {
     /// Covers the branch the round-trip test above never takes: opening a
     /// second window once the `messreq` session already exists
     /// (`has_session()` true → `new-window`, not `new-session -d`). Both
-    /// panes must show up in `list_sessions` — this throwaway socket has
+    /// panes must show up in `agent_sessions` — this throwaway socket has
     /// nothing else on it, so seeing exactly these two proves the server-wide
     /// `-a` scope isn't pulling in anything unexpected either.
     #[test]
@@ -659,9 +749,12 @@ mod tests {
             .expect("second open should reuse the session (new-window branch)");
         assert_ne!(first, second, "each window should get its own pane id");
 
+        // Same settle as the round-trip test above — `#{pane_current_command}`
+        // names the launching shell for a moment after the pane is created.
+        std::thread::sleep(std::time::Duration::from_millis(300));
         let sessions = backend
-            .list_sessions()
-            .expect("list_sessions should return Some");
+            .agent_sessions()
+            .expect("agent_sessions should return Some");
         assert!(
             sessions.contains(&first),
             "first pane should still be listed: {sessions:?}"
@@ -751,12 +844,20 @@ mod tests {
              by /bin/echo -c '...'; file contents: {marker:?}"
         );
 
-        let sessions = backend
-            .list_sessions()
-            .expect("list_sessions should return Some");
+        // Liveness is asked of tmux directly, not through `agent_sessions`:
+        // this pane runs a *compound* command (`echo …; sleep 300`), so the
+        // wrapping `sh` stays above `sleep` and `#{pane_current_command}`
+        // reports a shell — free, by design (see `panes_with_an_agent`).
+        // What this test is about is that the pane exists and did not exit
+        // instantly, which is a different question.
+        let panes = Command::new("tmux")
+            .args(["-L", SOCKET, "list-panes", "-a", "-F", "#{pane_id}"])
+            .output()
+            .expect("list-panes should run");
+        let panes = String::from_utf8_lossy(&panes.stdout);
         assert!(
-            sessions.contains(&pane_id),
-            "the pane should still be alive (sleep 300), not have exited instantly: {sessions:?}"
+            panes.lines().any(|p| p.trim() == pane_id),
+            "the pane should still be alive (sleep 300), not have exited instantly: {panes:?}"
         );
 
         let _ = std::fs::remove_file("/tmp/messreq-tmux-shell-test.out");
@@ -857,12 +958,12 @@ mod tests {
     /// messreq-e5t.4: bindings recorded before the fix point at panes
     /// inside the dedicated `SESSION`; windows opened after the fix can
     /// land in any session messreq itself happens to be running in.
-    /// `list_sessions` has to see panes regardless of which session they
+    /// `agent_sessions` has to see panes regardless of which session they
     /// ended up in, or the 🔨/💤 badges go stale for old bindings the
     /// moment a single new-style window opens elsewhere.
     #[test]
     #[ignore = "spins up a real tmux server on a throwaway -L socket; run with `cargo test -- --ignored`"]
-    fn tmux_backend_list_sessions_sees_panes_across_every_session() {
+    fn tmux_backend_agent_sessions_sees_panes_across_every_session() {
         const SOCKET: &str = "messreq-test-list-scope";
         let _ = Command::new("tmux")
             .args(["-L", SOCKET, "kill-server"])
@@ -917,8 +1018,8 @@ mod tests {
 
         let backend = TmuxBackend::with_socket(SOCKET);
         let sessions = backend
-            .list_sessions()
-            .expect("list_sessions should return Some");
+            .agent_sessions()
+            .expect("agent_sessions should return Some");
 
         assert!(
             sessions.contains(&legacy_pane),

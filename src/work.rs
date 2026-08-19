@@ -113,34 +113,39 @@ pub fn heartbeat_fresh(threshold_secs: u64) -> bool {
         .unwrap_or(false)
 }
 
-/// Full ids of every live session in the configured terminal backend — kept
-/// under its historical name (see the module doc on `iterm_session`) even
-/// though the backend may now be tmux.
+/// Ids of every session in the configured terminal backend that currently
+/// has an agent running in it — not every session that exists (messreq-e5t.8;
+/// see `TerminalBackend::agent_sessions` and `terminal::agent`).
 ///
-/// A broken `"terminal"` config value is not surfaced here: `iterm_session_ids`
-/// is polled on every UI tick purely to refresh 🔨/💤 badges, not a place with
-/// a channel back to the user. It resolves to "no live sessions" instead,
+/// A broken `"terminal"` config value is not surfaced here: this is polled on
+/// every reload purely to refresh 🔨/💤 badges, not a place with a channel
+/// back to the user. It resolves to "no session has an agent" instead,
 /// exactly like a real backend failure would; the loud, actionable error is
 /// the one `start_work`/`resume_work_with_prompt` return the moment the user
 /// actually tries to open or resume a session — the same way a bad
 /// `work_dir_for_mr` result is: checked on Enter, not every tick.
-pub(crate) fn iterm_session_ids() -> HashSet<String> {
+///
+/// `unwrap_or_default` — an empty set — is deliberately the safe direction
+/// and not just a convenient one: an MR whose session is missing from here
+/// gets opened or resumed on Enter, never handed a queue line nothing is
+/// reading.
+pub(crate) fn agent_session_ids() -> HashSet<String> {
     crate::config::terminal_backend()
         .ok()
         .and_then(|backend| {
             backend
                 .build(open_mode_for_non_open_calls())
-                .list_sessions()
+                .agent_sessions()
         })
         .unwrap_or_default()
 }
 
 /// `TerminalBackendName::build` needs an `OpenMode` even for calls that
-/// never place a new session (`list_sessions`/`focus`/`send_line`) — it only
+/// never place a new session (`agent_sessions`/`focus`/`send_line`) — it only
 /// affects `TmuxBackend::open`, so a broken `"open_mode"`/`MESSREQ_OPEN_MODE`
 /// value is swallowed here into the default rather than surfaced, the same
 /// way a broken `"terminal"` value already is on these paths (see
-/// `iterm_session_ids`'s doc above and `focus_iterm`/`deliver_to_live_session`
+/// `agent_session_ids`'s doc above and `focus_iterm`/`deliver_to_live_session`
 /// below): there is no error channel on any of these, and the loud version
 /// of that error already fires from `open_session` the moment a session is
 /// actually opened.
@@ -369,7 +374,7 @@ fn open_session(cmd: &str, sid: String, name: String) -> Result<serde_json::Valu
 }
 
 /// Bring a live session to the front, in whichever terminal backend is
-/// configured. See `iterm_session_ids` for why a broken `"terminal"` config
+/// configured. See `agent_session_ids` for why a broken `"terminal"` config
 /// value is swallowed here rather than surfaced: there is no error channel on
 /// this path, and the loud version of that error already fired when the
 /// session was opened.

@@ -1,10 +1,11 @@
 //! The terminal backend seam (messreq-ltu).
 //!
 //! `work.rs` needs exactly four operations from whatever terminal the user is
-//! in: open a window running a command, list which sessions are still alive,
-//! send text into a live one, and focus it. `TerminalBackend` is the trait;
-//! [`iterm2::Iterm2Backend`] (today's behavior, moved here unchanged) and
-//! [`tmux::TmuxBackend`] are its two implementations.
+//! in: open a window running a command, list which sessions currently have
+//! an agent running in them, send text into one of those, and focus it.
+//! `TerminalBackend` is the trait; [`iterm2::Iterm2Backend`] and
+//! [`tmux::TmuxBackend`] are its two implementations, and [`agent`] holds the
+//! rule they both answer the second question with.
 //!
 //! Selection checks, in order (see `config::resolve_terminal_backend_with`):
 //! the `MESSREQ_TERMINAL` environment variable (messreq-e5t.6), then the
@@ -19,7 +20,7 @@
 //! from `MESSREQ_TERMINAL` or the config key is also a `WorkError`, not a
 //! silent fallback to the next input.
 //!
-//! `list_sessions`/`send_line`/`focus` return `Option`/`bool` instead of
+//! `agent_sessions`/`send_line`/`focus` return `Option`/`bool` instead of
 //! propagating an error, because they are read as capabilities, not fallible
 //! operations: `None`/`false` also has to mean "this backend cannot do this
 //! at all", for a future backend that cannot list or focus (Terminal.app,
@@ -29,6 +30,7 @@
 //! stays a `Result` — a backend that cannot open anything is not a terminal
 //! backend at all.
 
+mod agent;
 mod detect;
 mod iterm2;
 mod tmux;
@@ -142,9 +144,20 @@ pub(crate) trait TerminalBackend {
     /// `open_session` in `work.rs`.
     fn open(&self, cmd: &str, sid: &str, name: &str) -> Result<String, WorkError>;
 
-    /// Ids of every session/pane currently alive, if this backend can
-    /// enumerate them at all.
-    fn list_sessions(&self) -> Option<HashSet<String>>;
+    /// Ids of every session/pane that currently has an agent running in it,
+    /// if this backend can answer that at all.
+    ///
+    /// Not "every session that exists" (messreq-e5t.8): an iTerm2 tab
+    /// outlives the agent that was launched in it, and a tmux pane can fall
+    /// back to a shell. The dashboard's one consumer of this — `binding_state`
+    /// in `ui/mod.rs` — uses the answer to decide whether Enter may hand a
+    /// prompt to something already running, so "the window is still there" is
+    /// not the fact it needs.
+    ///
+    /// `None`, and equally an id left out of the set, must mean "not
+    /// occupied": see `terminal::agent` for why every uncertain answer has to
+    /// fall on that side.
+    fn agent_sessions(&self) -> Option<HashSet<String>>;
 
     /// Send a line of text into a live session, followed by Enter as a
     /// separate keystroke. `false` on failure, including "not supported".

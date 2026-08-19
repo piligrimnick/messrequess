@@ -13,7 +13,7 @@ use crate::forge::{Forge, GitlabForge};
 use crate::model::MergeRequest;
 use crate::prompt::PromptMode;
 use crate::work::{
-    iterm_session_ids, load_seen, load_worktabs, mr_key, prune_prompts, save_seen, save_worktabs,
+    agent_session_ids, load_seen, load_worktabs, mr_key, prune_prompts, save_seen, save_worktabs,
 };
 
 /// The open prompt-mode menu (Shift+Enter).
@@ -55,8 +55,10 @@ pub(crate) struct App {
     pub(crate) work: serde_json::Map<String, serde_json::Value>,
     // acked updated_at (what counts as "new")
     pub(crate) seen: serde_json::Map<String, serde_json::Value>,
-    // live iTerm2 sessions (for the open/detached status)
-    pub(crate) alive: HashSet<String>,
+    // sessions that currently have an agent running in them, in whichever
+    // terminal backend is configured (for the open/detached status) — not
+    // every session that exists, see `work::agent_session_ids`
+    pub(crate) agent_sessions: HashSet<String>,
     pub(crate) pending: Option<Receiver<Vec<MergeRequest>>>, // background data load
     pub(crate) spinner: usize,                               // spinner animation frame
     pub(crate) menu: Option<PromptMenu>,                     // the open prompt-mode menu
@@ -115,7 +117,7 @@ impl App {
             me,
             work: load_worktabs(),
             seen: load_seen(),
-            alive: iterm_session_ids(),
+            agent_sessions: agent_session_ids(),
             pending: None,
             spinner: 0,
             menu: None,
@@ -135,7 +137,7 @@ impl App {
         if self.pending.is_some() {
             return;
         }
-        self.alive = iterm_session_ids(); // a cheap call — refresh the work statuses
+        self.agent_sessions = agent_session_ids(); // a cheap call — refresh the work statuses
         let me = self.me.clone();
         let (tx, rx) = channel();
         std::thread::spawn(move || {
@@ -155,7 +157,7 @@ impl App {
                 let selected_key = self.selected_key();
                 self.items = items;
                 self.last_load = Instant::now();
-                self.alive = iterm_session_ids();
+                self.agent_sessions = agent_session_ids();
                 // First run (the seen file is empty) — quietly record the
                 // baseline so that we do not mark literally everything as new.
                 if self.seen.is_empty() && !self.items.is_empty() {
@@ -248,16 +250,19 @@ impl App {
         self.pending.is_some()
     }
 
-    pub(crate) fn refresh_alive(&mut self) {
-        self.alive = iterm_session_ids();
+    pub(crate) fn refresh_agent_sessions(&mut self) {
+        self.agent_sessions = agent_session_ids();
     }
 
-    /// Work status of an MR: None — not started; Some(true) — the tab is open;
-    /// Some(false) — closed, but the session is alive (available for a resume).
+    /// Work status of an MR: None — not started; Some(true) — an agent is
+    /// running in the bound session (🔨 open); Some(false) — the binding is
+    /// there but nothing is running in it, so it is available for a resume
+    /// (💤 resume). Note what Some(false) covers since messreq-e5t.8: the
+    /// window may well still be on screen, sitting at a shell prompt.
     pub(crate) fn work_status(&self, mr: &MergeRequest) -> Option<(bool, &serde_json::Value)> {
         self.work.get(&mr_key(mr)).map(|e| {
             let sid = e["iterm_session"].as_str().unwrap_or("");
-            (!sid.is_empty() && self.alive.contains(sid), e)
+            (!sid.is_empty() && self.agent_sessions.contains(sid), e)
         })
     }
 
@@ -402,7 +407,7 @@ mod tests {
             me: "me".to_string(),
             work: serde_json::Map::new(),
             seen: serde_json::Map::new(),
-            alive: HashSet::new(),
+            agent_sessions: HashSet::new(),
             pending: None,
             spinner: 0,
             menu: None,

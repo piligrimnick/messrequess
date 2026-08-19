@@ -1,9 +1,7 @@
-//! The iTerm2 backend — today's only backend, moved here unchanged so
-//! selecting it (the default, and the only option before messreq-ltu) is
-//! byte-for-byte the same behavior as before.
+//! The iTerm2 backend — the default, and the only option before messreq-ltu.
 //!
-//! Two non-obvious workarounds, both deliberate (see also `work.rs`'s module
-//! doc):
+//! Two non-obvious workarounds in `open`, both deliberate (see also
+//! `work.rs`'s module doc):
 //!
 //! 1. The launch command is prefixed with `touch <sentinel>` and we poll for
 //!    that file, because `it2 tab new -c` *types* the command into the tab's
@@ -12,6 +10,12 @@
 //!    caller already believes the session is open.
 //! 2. While the sentinel is missing we keep resending Enter into the new
 //!    session, since that is exactly the failure this is working around.
+//!
+//! `agent_sessions` carries a third one, of a different kind: iTerm2 has no
+//! notion of "is anything running in this tab", so the answer is assembled
+//! from the session's tty plus a `ps` probe (messreq-e5t.8 — see
+//! `terminal::agent`). tmux, which tracks the pane's command itself, needs
+//! none of that.
 
 use std::collections::HashSet;
 use std::process::Command;
@@ -20,13 +24,25 @@ use std::time::Duration;
 use crate::error::WorkError;
 use crate::work::{prompts_dir, shq};
 
-use super::TerminalBackend;
+use super::{agent, TerminalBackend};
 
 pub(crate) struct Iterm2Backend;
 
-/// Full ids of every live iTerm2 session (machine-readable, via `it2 --json`).
-fn iterm_session_ids() -> HashSet<String> {
-    let mut ids = HashSet::new();
+/// Every live iTerm2 session as `(id, tty)` (machine-readable, via
+/// `it2 --json`).
+///
+/// `tty` is what makes `agent_sessions` possible: `it2 session list --json`
+/// reports one per session, populated with the real device path
+/// (`/dev/ttys002`) — verified against the installed `it2`, whose per-session
+/// fields are `id`, `name`, `title`, `tty`, `rows`, `cols`, `is_tmux`,
+/// `window_id`, `tab_id`. The `name` field happens to carry the foreground
+/// job in parentheses as well, but that is the user's iTerm2 title setting
+/// talking, so it is not read here.
+///
+/// A session with no `tty` keeps an empty string rather than being dropped:
+/// `open` diffs these snapshots by id and must see every session, tty or not.
+fn iterm_sessions() -> Vec<(String, String)> {
+    let mut sessions = Vec::new();
     if let Ok(out) = Command::new("it2")
         .args(["session", "list", "--json"])
         .output()
@@ -35,13 +51,19 @@ fn iterm_session_ids() -> HashSet<String> {
             if let Some(arr) = v.as_array() {
                 for s in arr {
                     if let Some(id) = s.get("id").and_then(|x| x.as_str()) {
-                        ids.insert(id.to_string());
+                        let tty = s.get("tty").and_then(|x| x.as_str()).unwrap_or("");
+                        sessions.push((id.to_string(), tty.to_string()));
                     }
                 }
             }
         }
     }
-    ids
+    sessions
+}
+
+/// Ids only — what `open` needs to spot the session it just created.
+fn iterm_session_ids() -> HashSet<String> {
+    iterm_sessions().into_iter().map(|(id, _)| id).collect()
 }
 
 /// The line typed into the new tab: the whole POSIX script goes inside
@@ -119,8 +141,27 @@ impl TerminalBackend for Iterm2Backend {
         Ok(new_id)
     }
 
-    fn list_sessions(&self) -> Option<HashSet<String>> {
-        Some(iterm_session_ids())
+    /// Cross `it2`'s session list with the machine's foreground processes:
+    /// a session counts only when something other than a shell is running on
+    /// its tty (messreq-e5t.8 — see `terminal::agent` for the rule and for
+    /// why an unanswerable probe has to come back as "not occupied").
+    ///
+    /// `None` when `ps` itself could not be run — the one case where this
+    /// backend cannot answer. An `it2` that fails instead yields an empty
+    /// session list, which lands on the same side by a different route.
+    fn agent_sessions(&self) -> Option<HashSet<String>> {
+        let foreground = agent::foreground_by_tty()?;
+        Some(
+            iterm_sessions()
+                .into_iter()
+                .filter(|(_, tty)| {
+                    foreground.get(agent::tty_key(tty)).is_some_and(|commands| {
+                        agent::any_agent_running(commands.iter().map(String::as_str))
+                    })
+                })
+                .map(|(id, _)| id)
+                .collect(),
+        )
     }
 
     /// Two separate sends, mirroring the type-then-submit idiom `open` relies
@@ -148,6 +189,43 @@ impl TerminalBackend for Iterm2Backend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The only way to exercise `agent_sessions` for real: it needs a live
+    /// iTerm2 with the Python API enabled, so it is `#[ignore]`d like the
+    /// tmux backend's real-server tests. Read-only — it lists sessions and
+    /// runs `ps`, and opens nothing.
+    ///
+    /// What it can assert without knowing what the user has open: every
+    /// session it reports must be one `it2` actually listed, and a session
+    /// with no tty can never be reported (there is nothing to look up). The
+    /// interesting check is the printed breakdown — a tab sitting at a shell
+    /// prompt must appear under "free", a tab running an agent under
+    /// "occupied".
+    #[test]
+    #[ignore = "needs a live iTerm2 with the Python API enabled; run with `cargo test -- --ignored`"]
+    fn iterm2_agent_sessions_is_a_subset_of_the_sessions_with_a_tty() {
+        let sessions = iterm_sessions();
+        let occupied = Iterm2Backend
+            .agent_sessions()
+            .expect("ps should be runnable on this machine");
+
+        for id in &occupied {
+            let (_, tty) = sessions
+                .iter()
+                .find(|(sid, _)| sid == id)
+                .expect("every reported session must come from it2's own list");
+            assert!(!tty.is_empty(), "a session with no tty cannot be occupied");
+        }
+
+        for (id, tty) in &sessions {
+            let state = if occupied.contains(id) {
+                "occupied"
+            } else {
+                "free"
+            };
+            println!("{state:9} {tty:16} {id}");
+        }
+    }
 
     #[test]
     fn wrap_for_tab_produces_one_sh_c_call() {

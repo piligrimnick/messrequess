@@ -93,7 +93,7 @@ The developer uses macOS, and only macOS gets a test each day. But the largest p
 - the full test suite, together with the seven tests that use a real tmux server;
 - the data path, to a frame on the screen.
 
-These functions operate on Linux: the dashboard and all the data on a card; the tmux backend, which opens a session, lists the open sessions, sends input, focuses a pane, and selects between a pane and a window; the automatic selection of a backend; and each of the other run modes.
+These functions operate on Linux: the dashboard and all the data on a card; the tmux backend, which opens a session, finds the sessions that have an agent in them, sends input, focuses a pane, and selects between a pane and a window; the automatic selection of a backend; and each of the other run modes.
 
 Two functions do not operate:
 
@@ -242,7 +242,7 @@ Your `~/.config/messreq/prompts/` directory can contain `.txt` files from an ear
 | Key | Action |
 |---|---|
 | `↑` `↓` or `k` `j` | Move to a different card |
-| `Enter` | Open a Claude session for the selected MR. The tool opens a new tab, or focuses a tab that is already open, or starts a closed session again. For a closed session, the prompt reports the changes after the last poll |
+| `Enter` | Open a Claude session for the selected MR. The tool opens a new tab, focuses the session if an agent is already running in it, or starts a closed session again. For a closed session, the prompt reports the changes after the last poll |
 | `Shift+Enter` or `p` | Open the menu of prompt modes. See below |
 | `o` | Open the MR in the browser, and mark it as seen. This is for macOS only, because the tool starts the `open` program |
 | `m` | Mark each MR as seen |

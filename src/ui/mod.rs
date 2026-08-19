@@ -142,19 +142,26 @@ pub fn run_snapshot(me: String) {
     println!("{}", term.backend());
 }
 
-/// The MR's current binding (if any) and whether its tab is alive right now —
-/// the two facts `menu::decide` and the plain-Enter launch path both need.
+/// The MR's current binding (if any) and whether an agent is running in the
+/// session it names — the two facts `menu::decide` and the plain-Enter launch
+/// path both need.
+///
+/// The second one is not "is the window still there" (messreq-e5t.8). An
+/// iTerm2 tab whose Claude session was closed, or one iTerm2 restored on
+/// login, is still a window; handing it a queue line only makes the user's
+/// shell try to execute the sentence. `TerminalBackend::agent_sessions` is
+/// where that distinction is drawn, per backend — this stays one lookup.
 fn binding_state(app: &App, item: usize) -> (Option<serde_json::Value>, bool) {
     let key = mr_key(&app.items[item]);
     let entry = app.work.get(&key).cloned();
-    let alive = entry
+    let agent_running = entry
         .as_ref()
         .map(|e| {
             let sid = e["iterm_session"].as_str().unwrap_or("");
-            !sid.is_empty() && app.alive.contains(sid)
+            !sid.is_empty() && app.agent_sessions.contains(sid)
         })
         .unwrap_or(false);
-    (entry, alive)
+    (entry, agent_running)
 }
 
 /// Mint a brand-new session (fresh id) for the MR, overwriting whatever
@@ -165,7 +172,7 @@ fn launch_new(app: &mut App, item: usize, mode: PromptMode) {
             let key = mr_key(&app.items[item]);
             app.work.insert(key, entry);
             save_worktabs(&app.work);
-            app.refresh_alive();
+            app.refresh_agent_sessions();
         }
         Err(err) => app.notice = Some(err.to_string()),
     }
@@ -180,7 +187,7 @@ fn launch_resume(app: &mut App, item: usize, entry: serde_json::Value, prompt: S
             let key = mr_key(&app.items[item]);
             app.work.insert(key, entry);
             save_worktabs(&app.work);
-            app.refresh_alive();
+            app.refresh_agent_sessions();
         }
         Err(err) => app.notice = Some(err.to_string()),
     }
@@ -195,22 +202,22 @@ fn launch_resume(app: &mut App, item: usize, entry: serde_json::Value, prompt: S
 /// (merged/closed and pruned in the meantime), this is a no-op notice rather
 /// than acting on whatever now happens to sit at the old index.
 ///
-/// `menu::decide` turns the MR's current binding state, whether its tab is
-/// alive, the picked item, and whether the "start fresh" modifier
-/// (`force_new`) was used into a `MenuAction`; this applies it. Starting a
+/// `menu::decide` turns the MR's current binding state, whether an agent is
+/// running in its session, the picked item, and whether the "start fresh"
+/// modifier (`force_new`) was used into a `MenuAction`; this applies it. Starting a
 /// brand-new session over an existing binding needs confirmation first, so
 /// that one case is deferred to `app.confirm` instead of acted on immediately
 /// — see `ConfirmOverwrite`.
 fn handle_menu_pick(app: &mut App, key: &str, picked: MenuItem, force_new: bool) {
-    app.refresh_alive();
+    app.refresh_agent_sessions();
     let Some(item) = app.find_item(key) else {
         app.notice = Some("That MR is no longer in the list.".to_string());
         return;
     };
-    let (existing, tab_alive) = binding_state(app, item);
+    let (existing, agent_running) = binding_state(app, item);
     let has_binding = existing.is_some();
 
-    let Some(action) = decide(picked, has_binding, tab_alive, force_new) else {
+    let Some(action) = decide(picked, has_binding, agent_running, force_new) else {
         // The menu never actually offers this combination (see
         // `MenuItem::menu_for`) — a defensive no-op, not a silent substitute.
         return;
@@ -417,7 +424,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                         // Shift+Enter (where the terminal tells it apart) or `p` — prompt-mode menu.
                         KeyCode::Char('p') => {
                             if let Some(i) = app.selected_item() {
-                                app.refresh_alive();
+                                app.refresh_agent_sessions();
                                 let has_binding = binding_state(app, i).0.is_some();
                                 app.menu = Some(PromptMenu {
                                     key: mr_key(&app.items[i]),
@@ -428,7 +435,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                         }
                         KeyCode::Enter if k.modifiers.contains(KeyModifiers::SHIFT) => {
                             if let Some(i) = app.selected_item() {
-                                app.refresh_alive();
+                                app.refresh_agent_sessions();
                                 let has_binding = binding_state(app, i).0.is_some();
                                 app.menu = Some(PromptMenu {
                                     key: mr_key(&app.items[i]),
@@ -438,17 +445,20 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                             }
                         }
                         KeyCode::Enter => {
-                            // Claude opens in a separate iTerm2 tab — the TUI does
-                            // not block. Tab open → focus it; closed → resume; not
-                            // started → a new session (Surface mode by default).
+                            // Claude opens in a separate terminal session — the TUI
+                            // does not block. Agent already running there → focus it;
+                            // no agent (whether or not the window is still around) →
+                            // resume; not started → a new session (Surface mode by
+                            // default).
                             if let Some(i) = app.selected_item() {
-                                app.refresh_alive();
+                                app.refresh_agent_sessions();
                                 let key = mr_key(&app.items[i]);
-                                let (existing, tab_alive) = binding_state(app, i);
-                                // None — the tab is already open, we only focused it.
+                                let (existing, agent_running) = binding_state(app, i);
+                                // None — an agent was already running there, we only
+                                // focused it.
                                 let new_entry: Option<Result<serde_json::Value, WorkError>> =
                                     match existing {
-                                        Some(e) if tab_alive => {
+                                        Some(e) if agent_running => {
                                             let sid = e["iterm_session"]
                                                 .as_str()
                                                 .unwrap_or("")
@@ -465,7 +475,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                                     Some(Ok(entry)) => {
                                         app.work.insert(key, entry);
                                         save_worktabs(&app.work);
-                                        app.refresh_alive();
+                                        app.refresh_agent_sessions();
                                     }
                                     Some(Err(err)) => app.notice = Some(err.to_string()),
                                     None => {}
@@ -535,7 +545,7 @@ mod tests {
             me: "me".to_string(),
             work: serde_json::Map::new(),
             seen: serde_json::Map::new(),
-            alive: HashSet::new(),
+            agent_sessions: HashSet::new(),
             pending: None,
             spinner: 0,
             menu: None,

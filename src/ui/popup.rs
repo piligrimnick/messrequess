@@ -220,7 +220,7 @@ mod tests {
             me: "me".to_string(),
             work: serde_json::Map::new(),
             seen: serde_json::Map::new(),
-            alive: HashSet::new(),
+            agent_sessions: HashSet::new(),
             pending: None,
             spinner: 0,
             menu: None,

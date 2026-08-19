@@ -5,8 +5,8 @@
 //! which always mints a fresh session id — so picking anything on an MR that
 //! already had a session silently replaced the binding, and "continue this
 //! session without sending anything" was not reachable at all. `decide` below
-//! is the single place that turns "is there a binding / is its tab open /
-//! which item was picked" into what should actually happen.
+//! is the single place that turns "is there a binding / is an agent running in
+//! it / which item was picked" into what should actually happen.
 
 use crate::prompt::PromptMode;
 
@@ -61,15 +61,16 @@ impl MenuItem {
 /// What picking a menu item actually does.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum MenuAction {
-    /// The tab is already open and there is nothing to send — bring it to the
-    /// front. Only reachable for `ResumeSilent`: a `Prompt` pick on a live tab
-    /// has something to say, so it goes through `DeliverAndFocus` instead.
+    /// An agent is already running there and there is nothing to send — bring
+    /// the session to the front. Only reachable for `ResumeSilent`: a
+    /// `Prompt` pick on a session with an agent in it has something to say,
+    /// so it goes through `DeliverAndFocus` instead.
     Focus,
-    /// The tab is already open, and there is an agent in there to hand the
-    /// prompt to: write it to the session's prompt file and send one short
-    /// line into the live session pointing at that file, then bring the tab
-    /// to the front. See `work::deliver_to_live_session` for why this does
-    /// not retry the way a fresh launch does.
+    /// An agent is already running there to hand the prompt to: write it to
+    /// the session's prompt file and send one short line into the live
+    /// session pointing at that file, then bring the tab to the front. See
+    /// `work::deliver_to_live_session` for why this does not retry the way a
+    /// fresh launch does.
     DeliverAndFocus(PromptMode),
     /// Reopen the existing session in a new tab and send this mode's prompt.
     ResumeWithPrompt(PromptMode),
@@ -82,8 +83,14 @@ pub(crate) enum MenuAction {
 }
 
 /// The decision at the heart of the menu: given the MR's current binding
-/// state, whether its tab is alive, which item was picked, and whether the
-/// "start fresh" modifier was used, what should happen.
+/// state, whether an agent is running in the session it names, which item was
+/// picked, and whether the "start fresh" modifier was used, what should
+/// happen.
+///
+/// `agent_running` is not "the window is still open" (messreq-e5t.8): the
+/// two actions it gates — `Focus` and `DeliverAndFocus` — both assume
+/// something in that session is listening, and `DeliverAndFocus` types a line
+/// into it. See `TerminalBackend::agent_sessions`.
 ///
 /// `force_new` is how "new session, with a prompt" (picking a mode but
 /// wanting a brand-new session instead of resuming/delivering into the
@@ -102,7 +109,7 @@ pub(crate) enum MenuAction {
 pub(crate) fn decide(
     item: MenuItem,
     has_binding: bool,
-    tab_alive: bool,
+    agent_running: bool,
     force_new: bool,
 ) -> Option<MenuAction> {
     if let (MenuItem::Prompt(mode), true) = (item, force_new) {
@@ -110,7 +117,7 @@ pub(crate) fn decide(
     }
     match item {
         MenuItem::ResumeSilent if !has_binding => None,
-        MenuItem::ResumeSilent => Some(if tab_alive {
+        MenuItem::ResumeSilent => Some(if agent_running {
             MenuAction::Focus
         } else {
             MenuAction::ResumeSilent
@@ -118,7 +125,7 @@ pub(crate) fn decide(
         MenuItem::NewSession => Some(MenuAction::StartNew(PromptMode::Blank)),
         MenuItem::Prompt(mode) => Some(if !has_binding {
             MenuAction::StartNew(mode)
-        } else if tab_alive {
+        } else if agent_running {
             MenuAction::DeliverAndFocus(mode)
         } else {
             MenuAction::ResumeWithPrompt(mode)
@@ -139,7 +146,7 @@ mod tests {
     }
 
     #[test]
-    fn no_binding_ignores_tab_alive_it_cannot_be_meaningful_without_one() {
+    fn no_binding_ignores_agent_running_it_cannot_be_meaningful_without_one() {
         assert_eq!(
             decide(MenuItem::Prompt(PromptMode::Deep), false, true, false),
             Some(MenuAction::StartNew(PromptMode::Deep))
@@ -147,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_with_open_tab_delivers_the_prompt_and_focuses() {
+    fn binding_with_a_running_agent_delivers_the_prompt_and_focuses() {
         // The bug this exists to fix: picking a mode while the tab is already
         // open used to just focus it, silently dropping the prompt on the
         // floor — see messreq-e5t.3.
@@ -158,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_with_closed_tab_resumes_with_the_picked_prompt() {
+    fn binding_without_a_running_agent_resumes_with_the_picked_prompt() {
         assert_eq!(
             decide(MenuItem::Prompt(PromptMode::MyThreads), true, false, false),
             Some(MenuAction::ResumeWithPrompt(PromptMode::MyThreads))
@@ -166,13 +173,14 @@ mod tests {
     }
 
     #[test]
-    fn new_session_always_starts_new_regardless_of_binding_or_tab() {
-        for (has_binding, tab_alive) in [(false, false), (false, true), (true, false), (true, true)]
+    fn new_session_always_starts_new_regardless_of_binding_or_agent() {
+        for (has_binding, agent_running) in
+            [(false, false), (false, true), (true, false), (true, true)]
         {
             assert_eq!(
-                decide(MenuItem::NewSession, has_binding, tab_alive, false),
+                decide(MenuItem::NewSession, has_binding, agent_running, false),
                 Some(MenuAction::StartNew(PromptMode::Blank)),
-                "has_binding={has_binding} tab_alive={tab_alive}"
+                "has_binding={has_binding} agent_running={agent_running}"
             );
         }
     }
@@ -184,7 +192,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_silent_with_open_tab_focuses_rather_than_relaunching() {
+    fn resume_silent_with_a_running_agent_focuses_rather_than_relaunching() {
         assert_eq!(
             decide(MenuItem::ResumeSilent, true, true, false),
             Some(MenuAction::Focus)
@@ -192,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn resume_silent_with_closed_tab_resumes_sending_nothing() {
+    fn resume_silent_without_a_running_agent_resumes_sending_nothing() {
         assert_eq!(
             decide(MenuItem::ResumeSilent, true, false, false),
             Some(MenuAction::ResumeSilent)
@@ -202,20 +210,21 @@ mod tests {
     #[test]
     fn force_new_on_a_prompt_item_always_starts_a_fresh_session_with_that_mode() {
         // "New session, with a prompt": the modifier key on a mode item, not a
-        // separate menu entry. Every binding/tab combination collapses to the
+        // separate menu entry. Every binding/agent combination collapses to the
         // same action — the caller (has_binding) still decides whether to
         // confirm before it discards an existing session.
-        for (has_binding, tab_alive) in [(false, false), (false, true), (true, false), (true, true)]
+        for (has_binding, agent_running) in
+            [(false, false), (false, true), (true, false), (true, true)]
         {
             assert_eq!(
                 decide(
                     MenuItem::Prompt(PromptMode::Deep),
                     has_binding,
-                    tab_alive,
+                    agent_running,
                     true
                 ),
                 Some(MenuAction::StartNew(PromptMode::Deep)),
-                "has_binding={has_binding} tab_alive={tab_alive}"
+                "has_binding={has_binding} agent_running={agent_running}"
             );
         }
     }
