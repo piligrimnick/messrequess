@@ -5,7 +5,9 @@
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#linux)
 
-A terminal dashboard for GitLab merge requests: the ones you opened, and the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads and merge-train position — and, more usefully, a computed answer to **"whose turn is it"**. Press Enter on a card and a new session opens — an iTerm2 tab or a tmux pane, whichever backend you are using — with Claude Code already holding that MR's context.
+A terminal dashboard for GitLab merge requests. It shows the merge requests that you opened, and the merge requests where you are a reviewer. For each merge request it shows the approvals, the pipeline status, the unresolved threads, and the position in the merge train. It also shows who must act next. Push Enter on a card, and the tool opens a new session with Claude Code. That session already has the data about the merge request. The session opens in an iTerm2 tab or in a tmux pane. The terminal backend controls this.
+
+This document uses the abbreviation MR for a merge request.
 
 ```
 ╭ 🧭 messreq ────────────────────────────────────────────────────────────────────────────────────────────────────────╮
@@ -47,112 +49,127 @@ A terminal dashboard for GitLab merge requests: the ones you opened, and the one
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-*One frame from `messreq --snapshot`, the tool's own read-only frame dump, rendered here against invented merge requests. The heavy-bordered card — red, in a real terminal — is the one waiting on you; `▶` marks the selection.*
+*The command `messreq --snapshot` made this frame. All the merge requests in it are invented. The card with the heavy border is the card that waits for you. In a terminal, that border is red. The symbol `▶` shows the selected card.*
 
-## Read this before installing
+## Read this before you install
 
-This is one person's tool, published because someone else might find it useful. It is not a product and it does not try to work everywhere. It assumes a specific setup. Two things are hard requirements — an authenticated `glab` and a Rust toolchain to build with — and without them it does not start at all. The rest of the table is what the Claude-session feature needs; skip it and you still get the dashboard.
+One person wrote this tool, and made it public because other persons can find it useful. It is not a product, and it does not operate in all conditions. It needs a specific setup. This section tells you what that setup is.
 
-**The version is 0.1.0, and it means what it says.** One person uses this daily on one machine; that is the whole test matrix. Config keys, prompt template names, the state file formats and the flags can all change without a deprecation period, and there is no changelog to read before upgrading. `v0.1.0` is tagged, so you can pin it with `cargo install --git https://github.com/piligrimnick/messrequess --tag v0.1.0`; installing without `--tag` builds whatever `main` currently holds.
+**The version is 0.1.0, and that number is accurate.** One person uses this tool each day, on one machine. That is the full test. The config keys, the names of the prompt templates, the formats of the state files, and the command-line flags can change with no warning. There is no changelog. The tag `v0.1.0` exists, so you can install that version:
 
-| Requirement | Why | Optional? |
-|---|---|---|
-| **macOS**, or **Linux** | Every external program is a child process, so nothing in the dashboard itself is tied to one OS. Two features still are: desktop notifications and the `o` key | No. Read [Linux](#linux) for what does and does not work there |
-| A terminal backend: **iTerm2** with the **Python API enabled** (Settings → General → Magic → *Enable Python API*), **or tmux** | Sessions are opened and driven through one of the two. messreq picks one itself unless you name it — see the `terminal` config key | No, for the Claude feature. Either one will do |
-| **`it2`** — the iTerm2 CLI from PyPI (`uv tool install it2`, or `pipx install it2`) | Creates the tab, sends input, focuses the session | Yes, if you use the tmux backend |
-| **`glab`**, already authenticated | All GitLab access is `glab api …`. There is no HTTP client and no token handling of its own — if `glab` can't reach your instance, neither can this | No |
-| **Claude Code CLI** (`claude`) | It is what gets launched in the new tab or pane | No, for the Claude feature |
-| **Rust toolchain** | There is no binary distribution yet; you build from source | No |
-| `terminal-notifier` | Nicer notifications with a clickable URL; falls back to `osascript`. macOS only — both of them are | Yes |
+```bash
+cargo install --git https://github.com/piligrimnick/messrequess --tag v0.1.0
+```
 
-Two more things that trip people up:
+If you do not give `--tag`, cargo builds the current content of the `main` branch.
 
-- A **self-hosted GitLab instance usually means being on its VPN.** Without it, `glab` fails: at startup the binary prints an authentication error and exits, and a failed refresh mid-session leaves the list empty. An empty response is deliberately treated as a failed request rather than "all your MRs got closed", so the snapshot is left alone and you don't get an avalanche of false "merged" notifications.
-- There is **no Homebrew tap yet**, so installing means building from source.
+### What you need
 
-If the dashboard part is all you want, you can skip iTerm2, `it2` and Claude Code: the list, the badges and the notifications work without them. Enter then fails with a popup naming what did not work — either the missing config file or the session that never started.
+The dashboard and the Claude sessions need different programs. So there are two lists below. You must have all the items in the first list.
+
+**To operate the dashboard** — the list of MRs, the badges, the labels, and the notifications:
+
+- **macOS or Linux.** The dashboard contains no code for one operating system only. Two functions are for macOS only, and the [Linux](#linux) section tells you which.
+- **`glab`, with authentication to your instance.** The tool sends each GitLab request with `glab api`. It has no HTTP client and no tokens of its own. If `glab` cannot connect to your instance, this tool also cannot. Without authentication, the tool prints an error and stops.
+- **A Rust toolchain**, because you build the tool from the source. There are no compiled binaries and no Homebrew tap.
+
+**To open a Claude session from a card**, with the Enter key, you must also have:
+
+- **The Claude Code CLI** (`claude`). This is the program that operates in the new tab or pane.
+- **One terminal backend.** Use tmux, or use iTerm2. For iTerm2, switch on the Python API: Settings → General → Magic → *Enable Python API*. Then install the **`it2`** CLI from PyPI, with `uv tool install it2` or `pipx install it2`. One backend is sufficient. The tool finds a backend automatically, and the `terminal` config key replaces that choice.
+- **A config file** that gives the location of your local checkouts. The [Configure](#configure) section shows this file. It is three lines long.
+
+If you do not have the items in the second list, the dashboard operates correctly. The Enter key then opens a popup that names the missing item.
+
+**Optional, and for macOS only:** install `terminal-notifier`. Each notification then contains a link to the MR, and you can click that link. Without `terminal-notifier`, the tool uses `osascript`, which cannot show a link.
+
+**A self-hosted GitLab instance usually needs a VPN.** Without the VPN, `glab` fails. At the start, the tool prints an authentication error and stops. If a refresh fails during operation, the list becomes empty. The tool reads an empty response as a failed request, and not as "all the MRs are closed". So it keeps the last snapshot, and it sends no false "merged" notifications.
 
 ### Linux
 
-macOS is the machine this is developed on, and it is the only one anything is tested on daily. Linux still works for most of what the tool does. A smoke test on Ubuntu 26.04 (aarch64, tmux 3.6) covered the documented install path — `cargo install --git … --tag v0.1.0` against an anonymous clone — the whole test suite including the seven tests that drive a real tmux server, and the data path down to a rendered frame.
+The developer uses macOS, and only macOS gets a test each day. But Linux operates correctly for the largest part of this tool. A test on Ubuntu 26.04 (aarch64, tmux 3.6) included three steps:
 
-What works there: the dashboard and everything on a card, the tmux backend (open, list, send, focus, and the pane-vs-window placement), backend auto-detection, and every auxiliary run mode.
+- the documented installation, `cargo install --git … --tag v0.1.0`, from an anonymous clone;
+- the full test suite, together with the seven tests that use a real tmux server;
+- the data path, to a frame on the screen.
 
-Two things do not:
+These functions operate on Linux: the dashboard and all the data on a card; the tmux backend, which opens, lists, sends, focuses, and selects between a pane and a window; the automatic selection of a backend; and each of the other run modes.
 
-- **Desktop notifications are dropped without a word.** Delivery goes through `terminal-notifier` and falls back to `osascript`; neither program exists on Linux, and both calls ignore the failure. The pass still computes the diff and still rewrites `state.json`, so nothing looks wrong — it is simply always quiet. A `notify-send` path is tracked as `messreq-m3d`.
-- **The `o` key does nothing.** It shells out to `open`, which is macOS-only; Linux wants `xdg-open`. Same issue.
+Two functions do not operate:
 
-One more thing behaves differently rather than failing. Started from a plain terminal window, messreq is not inside tmux, so there is no session to put the new pane in and the tmux backend creates a detached one named `messreq` instead. Claude does start and the binding is recorded, but nothing shows up on screen until you run `tmux attach -t messreq` yourself. Start messreq from inside tmux and the pane opens beside the dashboard, the way it does on macOS.
+- **The tool sends no desktop notification, and it gives you no message about this.** It sends a notification with `terminal-notifier`. If `terminal-notifier` is not available, it uses `osascript`. Linux has neither program, and the tool ignores the two failures. The pass still calculates the changes, and it still writes `state.json` again. Nothing looks incorrect, but you get no notification. The issue `messreq-m3d` records the necessary `notify-send` path.
+- **The `o` key does nothing.** It starts `open`, which is a macOS program. Linux needs `xdg-open`. This is part of the same issue.
 
-## Why it exists
+One function is different, but it does not fail. If you start messreq from a usual terminal window, messreq is not in tmux. The tmux backend then has no session for the new pane, so it makes a detached session with the name `messreq`. Claude starts, and the tool records the connection, but you see nothing on the screen. To see the session, run `tmux attach -t messreq`. If you start messreq in tmux, the pane opens adjacent to the dashboard, as it does on macOS.
 
-Once you have more than a handful of open merge requests, the GitLab UI stops answering the question you actually have. "What needs me right now?" is spread across three pages: approvals here, pipeline there, unresolved threads inside each MR.
+## Why this tool exists
 
-`compute_action` collapses all of that into one label per MR, and the card border turns red when the ball is in your court:
+If you have many open merge requests, the GitLab web interface does not answer your primary question. That question is "what needs me now?". The data for the answer is on three different pages: the approvals on one page, the pipeline on a second page, and the unresolved threads of each MR on a third page.
 
-Your own MR, first matching row wins:
+The function `compute_action` calculates one label for each MR. If you must act, the border of the card becomes red.
 
-| Situation | Label | Your turn? |
+For your own MR, the tool uses the first row that agrees with the conditions:
+
+| Condition | Label | Must you act? |
 |---|---|---|
-| It is a draft | `draft` | no |
-| Pipeline failed | `CI 🔴` | yes |
-| An unresolved thread whose last note is not yours | `→ reply` | yes |
-| Unresolved threads, but you had the last word in all of them | `waiting on reviewer` | no |
-| At least one approval, nothing unresolved | `✅ ready to merge` | no |
-| Anything else | `awaiting review` | no |
+| The MR is a draft | `draft` | no |
+| The pipeline failed | `CI 🔴` | yes |
+| An unresolved thread has a last note that is not yours | `→ reply` | yes |
+| There are unresolved threads, and you wrote the last note in each one | `waiting on reviewer` | no |
+| There is one approval or more, and there is no unresolved thread | `✅ ready to merge` | no |
+| All other conditions | `awaiting review` | no |
 
-Someone else's MR, again first match wins:
+For the MR of a different person, the tool again uses the first row that agrees:
 
-| Situation | Label | Your turn? |
+| Condition | Label | Must you act? |
 |---|---|---|
 | You requested changes | `⛔ changes requested` | no |
-| You approved it | `✅ approved` | no |
-| It is a draft | `draft` | no |
-| An unresolved thread whose last note is not yours | `→ your turn` | yes |
-| Anything else — you have not approved it and nothing is waiting on the author | `🔴 needs you` | yes |
+| You approved the MR | `✅ approved` | no |
+| The MR is a draft | `draft` | no |
+| An unresolved thread has a last note that is not yours | `→ your turn` | yes |
+| All other conditions: you did not approve the MR, and the author waits for no other person | `🔴 needs you` | yes |
 
-Two details worth knowing. A thread counts as waiting on you when the last note in it is not yours — *any* unresolved thread, not only the ones you wrote in. And `draft` is checked early, so a draft with a red pipeline still reads `draft`; drafts are hidden from the list entirely until you press `d`.
+Two facts are important here. First, a thread waits for you if the last note in it is not yours. This is correct for each unresolved thread, and not only for the threads that contain your notes. Second, the tool examines the draft condition early. So a draft MR shows the label `draft`, also when its pipeline failed. The tool hides all the drafts until you push `d`.
 
-Notifications key off the same computation, so "needs action" means the same thing in the TUI and on your desktop.
+The notifications use the same calculation. So "needs action" has the same meaning in the terminal and on your desktop.
 
 ## Install
 
-Read the requirements table above first — `glab`, the terminal backend and the Claude Code CLI are checked for at runtime, not at build time, so a successful build tells you nothing about whether the tool will work for you.
+Read the section [What you need](#what-you-need) first. The tool examines `glab`, the terminal backend, and the Claude Code CLI when it operates, and not when you build it. So a correct build does not tell you that the tool will operate.
 
 ```bash
 cargo install --git https://github.com/piligrimnick/messrequess
 ```
 
-That builds from source and puts the `messreq` binary in `~/.cargo/bin`, so it needs a Rust toolchain and about a minute of compiling. There are still no prebuilt binaries and no Homebrew tap — building is the only way in.
+This command builds the tool from the source, and puts the `messreq` binary in `~/.cargo/bin`. It needs a Rust toolchain and approximately one minute. There are no compiled binaries and no Homebrew tap, so a build is the only method.
 
-If you want the sources as well — to read the code, to edit the built-in prompts in [`prompts/`](prompts/), or to contribute — clone first:
+To get the source code also, make a clone first. Do this to read the code, to change the default prompts in [`prompts/`](prompts/), or to contribute:
 
 ```bash
 git clone https://github.com/piligrimnick/messrequess.git
 cd messrequess
-cargo install --path .        # installs the `messreq` binary into ~/.cargo/bin
+cargo install --path .        # this puts the `messreq` binary in ~/.cargo/bin
 ```
 
-Or build in place and symlink it yourself:
+As an alternative, build the tool in the clone, and make the symbolic link yourself:
 
 ```bash
 cargo build --release         # target/release/messreq
 ```
 
-Then check the prerequisites before the first run. There is no `messreq --version`; the version lives in `Cargo.toml` and in the git tags the badge above reads.
+Then examine the prerequisites before the first run. There is no `messreq --version` command. The version is in `Cargo.toml`, and in the git tags that the badge above reads.
 
 ```bash
-glab auth status              # must show an authenticated host
-it2 session list              # must print sessions, not an API error
+glab auth status              # this must show a host with authentication
+it2 session list              # this must print sessions, and not an API error
 claude --version
 ```
 
-To remove it: `cargo uninstall messreq` (or delete the binary and the symlink, if you built in place), then `~/.local/state/messreq/` and `~/.config/messreq/` (or `$XDG_CONFIG_HOME/messreq/`) for the state and the config. Nothing is written anywhere else.
+To remove the tool, run `cargo uninstall messreq`. If you built the tool in a clone, delete the binary and the symbolic link. Then delete `~/.local/state/messreq/` for the state, and `~/.config/messreq/` (or `$XDG_CONFIG_HOME/messreq/`) for the configuration. The tool writes to no other location.
 
 ## Configure
 
-The config file lives at `$XDG_CONFIG_HOME/messreq/config.json` when `XDG_CONFIG_HOME` is set and non-empty, and at `~/.config/messreq/config.json` otherwise. Its main job is mapping a GitLab project to the local checkout where the Claude session should start:
+The config file is at `$XDG_CONFIG_HOME/messreq/config.json` when `XDG_CONFIG_HOME` has a value. If it has no value, the file is at `~/.config/messreq/config.json`. The primary function of this file is to connect a GitLab project to the local checkout. The Claude session starts in that checkout.
 
 ```json
 {
@@ -168,159 +185,179 @@ The config file lives at `$XDG_CONFIG_HOME/messreq/config.json` when `XDG_CONFIG
 }
 ```
 
-Every key it understands:
+These are all the keys that the tool reads:
 
-| Key | Type | Default | What it does |
+| Key | Type | Default | Function |
 |---|---|---|---|
-| `default_path` | string | none | The checkout used for every project not listed in `projects`. For a monorepo it is all you need. A blank string counts as absent |
-| `projects` | object | `{}` | GitLab project path → local checkout. The key is the path as GitLab shows it — the same string that appears on the card — matched with case and surrounding slashes ignored. A leading `~` expands to `$HOME`, here and in `default_path` |
-| `terminal` | string | auto-detected | Which backend opens sessions: `"iterm2"` or `"tmux"`, case-insensitive. Omit it to let messreq detect one — tmux when messreq itself runs inside tmux, otherwise a working iTerm2, otherwise tmux |
-| `open_mode` | string | `"pane"` | tmux only: `"pane"` splits a pane beside the dashboard, `"window"` opens a new tmux window. No effect outside tmux, which always opens a window |
-| `pane_width` | number | `50` | tmux `"pane"` mode only: the percentage of the window's width the dashboard keeps, clamped to 10–90. Config-only — there is no environment override for this one |
-| `mouse` | bool | `false` | Wheel and click support in the TUI — see [Mouse support](#mouse-support-off-by-default) for the trade-off |
+| `default_path` | string | none | The checkout for each project that `projects` does not list. For a monorepo, this key is sufficient. An empty string has the same effect as no key |
+| `projects` | object | `{}` | The GitLab project path, and the local checkout for it. The key is the path that GitLab shows, which is also the string on the card. The tool ignores the letter case and the slashes at the two ends. A `~` at the start becomes `$HOME`, here and in `default_path` |
+| `terminal` | string | automatic | The backend that opens a session: `"iterm2"` or `"tmux"`. The letter case has no effect. If you remove this key, the tool selects a backend: tmux when messreq operates in tmux, then an operational iTerm2, then tmux |
+| `open_mode` | string | `"pane"` | For tmux only. The value `"pane"` divides the window, and puts a pane adjacent to the dashboard. The value `"window"` opens a new tmux window. This key has no effect outside tmux, because iTerm2 always opens a tab |
+| `pane_width` | number | `50` | For the tmux `"pane"` mode only. This is the percent of the window width for the dashboard. The tool limits the value to the range 10 to 90. There is no environment variable for this key |
+| `mouse` | bool | `false` | The wheel and the clicks in the terminal interface. See [Mouse support](#mouse-support-off-by-default) for the disadvantage |
 
-The file is optional, and so is every key in it. Without the file the dashboard still works — there is just nowhere to open a session, so Enter shows a popup pointing at this file. A file that is not valid JSON is read as *no file at all*: an empty config, no error, no crash. Individual keys are just as forgiving — a value of the wrong type (`"pane_width": "wide"`) is ignored and the default applies.
+The file is optional, and each key in it is also optional. Without the file, the dashboard operates correctly, but the tool has no location for a session. The Enter key then opens a popup that shows this file. If the file is not correct JSON, the tool reads it as no file: an empty configuration, with no error and no stop. The tool is equally tolerant with each key. If a value has the incorrect type, for example `"pane_width": "wide"`, the tool ignores that value and uses the default.
 
-Two keys are the exception, because a typo there has no sensible default to fall back to: an unrecognized `terminal` or `open_mode` is an error naming the bad value, not a silent fallback. It does not stop the dashboard from starting — it surfaces when you press Enter to open a session, and `messreq --plain` prints it at the top of its output.
+There are two exceptions, because an incorrect value in these two keys has no usable default. If `terminal` or `open_mode` has an unknown value, the tool gives an error that names that value. The error does not stop the dashboard. You see it when you push Enter to open a session, and `messreq --plain` prints it at the top of the output.
 
 ### The GitLab host
 
-Every call is `glab api` with the host passed explicitly, because under `launchd` there is no git repo in the working directory and `glab` would otherwise fall back to `gitlab.com` with the wrong token. The host is resolved once per process, in this order:
+The tool gives the host with each `glab api` call. This is necessary because `launchd` gives no git repository in the work directory. Without an explicit host, `glab` uses `gitlab.com` with the incorrect token. The tool finds the host one time for each process, in this sequence:
 
-1. `$GITLAB_HOST`, if set and not blank.
-2. The first `glab` `config.yml` found in `$GLAB_CONFIG_DIR`, `$XDG_CONFIG_HOME/glab-cli`, `~/Library/Application Support/glab-cli`, `~/.config/glab-cli` — taking an instance under `hosts:` that has a token. The top-level `host:` key is not trusted on its own (glab writes `gitlab.com` there on first run and never updates it after you log in elsewhere); it only breaks ties when several instances have tokens.
-3. `glab config get host` — in case the configuration moved somewhere none of those paths cover.
+1. `$GITLAB_HOST`, if it has a value.
+2. The first `glab` `config.yml` file in `$GLAB_CONFIG_DIR`, `$XDG_CONFIG_HOME/glab-cli`, `~/Library/Application Support/glab-cli`, or `~/.config/glab-cli`. The tool takes an instance below `hosts:` that has a token. The `host:` key at the top level is not sufficient. `glab` writes `gitlab.com` there at the first run. It does not change that value after you log in to a different instance. The tool uses that key only when more than one instance has a token.
+3. `glab config get host`, if the configuration is at a location that step 2 does not examine.
 4. `gitlab.com`.
 
 ### Environment variables
 
-| Variable | What it does | Accepted values | Precedence |
+| Variable | Function | Permitted values | Sequence |
 |---|---|---|---|
-| `MESSREQ_TERMINAL` | Forces the terminal backend for this run | `iterm2` or `tmux`, case-insensitive, trimmed | Wins over the `terminal` key **and** over auto-detection. Unset or blank falls through to them; an unrecognized value is an error |
-| `MESSREQ_OPEN_MODE` | tmux only: how a session opens when messreq runs inside tmux | `pane` or `window`, case-insensitive, trimmed | Wins over the `open_mode` key, then the `pane` default. Unset or blank falls through; an unrecognized value is an error |
-| `MESSREQ_MOUSE` | Wheel and click support in the TUI | `1`, `true`, `yes`, `on` / `0`, `false`, `no`, `off`, case-insensitive | Wins over the `mouse` key, then the off default. Unset, blank *or unrecognized* falls through — unlike the two above, a typo here is not an error |
-| `MESSREQ_DEBUG` | Prints diagnostics for failed `glab` calls, plus `glab auth status` | Any value, including empty — only the presence of the variable is checked | — |
-| `GITLAB_HOST` | The instance every `glab api` call goes to | A hostname; blank counts as unset | First in the host resolution above, ahead of glab's own configuration |
-| `GLAB_CONFIG_DIR` | Where to look for glab's `config.yml` | A directory path | Searched before `$XDG_CONFIG_HOME/glab-cli` and the two `$HOME` locations |
-| `XDG_CONFIG_HOME` | Base of the config directory: `$XDG_CONFIG_HOME/messreq/config.json` | A directory path; empty counts as unset | Wins over `$HOME/.config`. Also used for the legacy-path migration and for finding glab's config — but **not** for prompt templates, see below |
-| `HOME` | Base for the state directory (`~/.local/state/messreq/`), for the config directory when `XDG_CONFIG_HOME` is unset, and for prompt templates | A directory path | Set by your shell; messreq only reads it |
-| `TMUX`, `TMUX_PANE`, `TERM_PROGRAM` | Read, never set by you: tmux and iTerm2 set them. A non-empty `TMUX` makes detection pick tmux; `TERM_PROGRAM=iTerm.app` plus an `it2` probe that answers picks iTerm2; `TMUX_PANE` is how messreq knows which pane is its own | — | — |
+| `MESSREQ_TERMINAL` | Sets the terminal backend for one run | `iterm2` or `tmux`. The letter case and the spaces at the two ends have no effect | This variable replaces the `terminal` key **and** the automatic selection. With no value, the tool uses them. An unknown value is an error |
+| `MESSREQ_OPEN_MODE` | For tmux only. Sets how a session opens when messreq operates in tmux | `pane` or `window`. The letter case and the spaces at the two ends have no effect | This variable replaces the `open_mode` key, and then the `pane` default. With no value, the tool uses them. An unknown value is an error |
+| `MESSREQ_MOUSE` | The wheel and the clicks in the terminal interface | `1`, `true`, `yes`, `on`, or `0`, `false`, `no`, `off`. The letter case has no effect | This variable replaces the `mouse` key, and then the off default. With no value, **or with an unknown value**, the tool uses them. This is different from the two variables above, where an unknown value is an error |
+| `MESSREQ_DEBUG` | Prints data about each `glab` call that fails, and the output of `glab auth status` | Each value, and also an empty value. The tool examines only the presence of the variable | — |
+| `GITLAB_HOST` | The instance for each `glab api` call | A host name. An empty value has the same effect as no variable | Step 1 in the sequence above, before the configuration of `glab` |
+| `GLAB_CONFIG_DIR` | The location of the `config.yml` file of `glab` | A directory path | The tool examines this directory before `$XDG_CONFIG_HOME/glab-cli` and the two `$HOME` locations |
+| `XDG_CONFIG_HOME` | The base of the config directory, `$XDG_CONFIG_HOME/messreq/config.json` | A directory path. An empty value has the same effect as no variable | This variable replaces `$HOME/.config`. The tool also uses it for the migration of the old paths, and to find the configuration of `glab`. It does **not** use it for the prompt templates. See the note below |
+| `HOME` | The base of the state directory, `~/.local/state/messreq/`. Also the base of the config directory when `XDG_CONFIG_HOME` has no value, and the base for the prompt templates | A directory path | Your shell sets this variable, and messreq only reads it |
+| `TMUX`, `TMUX_PANE`, `TERM_PROGRAM` | tmux and iTerm2 set these variables, and you must not set them. A `TMUX` variable with a value makes the tool select tmux. The value `TERM_PROGRAM=iTerm.app`, together with an `it2` test that gives an answer, makes the tool select iTerm2. The tool reads `TMUX_PANE` to know its own pane | — | — |
 
-**One known inconsistency.** Prompt template overrides are always looked up under `$HOME/.config/messreq/prompts/`, even when `XDG_CONFIG_HOME` points somewhere else — while the config file honours it. Under a non-default `XDG_CONFIG_HOME` your prompt overrides are read from a directory nothing else uses. That is a bug, tracked as `messreq-u0c`, not a deliberate split.
+**One known inconsistency.** The tool looks for the prompt templates in `$HOME/.config/messreq/prompts/` only, also when `XDG_CONFIG_HOME` has a different value. But the config file obeys `XDG_CONFIG_HOME`. So, with a non-default `XDG_CONFIG_HOME`, the tool reads your prompt templates from a directory that no other function uses. This is a defect, and the issue `messreq-u0c` records it. It is not an intentional difference.
 
 ### Prompt templates
 
-The prompts sent to Claude are templates, not hard-coded strings — Markdown files, since a prompt is structured text a human edits, and `.md` gives you headings, lists and syntax highlighting in an editor. The built-in defaults live in [`prompts/`](prompts/) at the root of this repository. `messreq --dump-prompts` writes them out to `~/.config/messreq/prompts/` (existing files are left alone), after which you can edit any of them: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `blank_system`, `footer`. Each one is looked up in that directory first and falls back to the built-in.
+The prompts for Claude are templates, and not text in the code. They are Markdown files, because a prompt is structured text that a person edits. The `.md` format gives you headings, lists, and colors in an editor. The default templates are in [`prompts/`](prompts/), at the root of this repository.
 
-The syntax is `{variable}` substitution plus a non-nesting `[[if variable]]…[[else]]…[[end]]` block, where the condition is "the variable is non-empty". Two smaller pieces are rendered in code and cannot be overridden from a template: the per-thread line and the "conflicts" marker in the header.
+The command `messreq --dump-prompts` writes the default templates to `~/.config/messreq/prompts/`. It does not change a file that is already there. You can then edit each template: `header`, `surface_mine`, `surface_other`, `my_threads`, `deep`, `resume`, `blank_system`, and `footer`. The tool looks for each name in that directory first, and it uses the default template if the file is not there.
 
-`resume` is what gets sent when you reopen a session that is no longer running (see [Keys](#keys)) — instead of repeating the MR from scratch, it reports what moved (new approvals, the pipeline changing, new unresolved threads, the turn switching to you), using the same fingerprint `--notify` already tracks in `state.json`. Its two extra placeholders are `changes` (the rendered delta, empty if nothing moved or nothing is known yet — e.g. `--notify` has never run) and `elapsed` (how long ago that snapshot was taken).
+The syntax has two parts. The first part is a `{variable}` substitution. The second part is an `[[if variable]]…[[else]]…[[end]]` block, and you cannot put one block in another block. The condition is "the variable has a value". Two smaller parts are in the code, and a template cannot replace them: the line for each thread, and the "conflicts" mark in the header.
 
-If `~/.config/messreq/prompts/` still has `.txt` files from before this format changed (messreq-6x9), they keep working: a name is looked up as `.md` first, and only falls back to `.txt` if no `.md` file exists for it. Nothing is migrated or overwritten automatically — `--dump-prompts` will not write a `<name>.md` default next to a `<name>.txt` you already customized, since that would silently stop your customization from being read.
+The tool sends the `resume` template when you open a session again that no longer operates. See the [Keys](#keys) section. This template does not repeat the data about the MR. It reports the changes: the new approvals, the new pipeline status, the new unresolved threads, and a change of the person who must act. It uses the same data that `--notify` keeps in `state.json`. This template has two more variables. The variable `changes` contains those changes. It is empty if nothing changed, or if the tool knows nothing yet — for example, when `--notify` did not operate before. The variable `elapsed` gives the age of that snapshot.
+
+Your `~/.config/messreq/prompts/` directory can contain `.txt` files from an earlier version of this format; the issue `messreq-6x9` changed the format. Those files continue to operate: the tool looks for a `.md` file first, and it uses the `.txt` file if there is no `.md` file with that name. The tool changes and deletes nothing automatically. The command `--dump-prompts` writes no `<name>.md` default file adjacent to a `<name>.txt` file that you edited. The tool would then stop reading your `.txt` file.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| `↑` `↓` / `k` `j` | Move between cards |
-| `Enter` | Claude session for the selected MR: open a new tab, focus the existing one, or resume a closed one (with a prompt reporting what changed since the last poll) |
-| `Shift+Enter` or `p` | Prompt-mode menu (see below) |
-| `o` | Open the MR in the browser, also marking it seen. macOS only — it shells out to `open` |
-| `m` | Mark everything as seen |
-| `x` | Forget the session binding for this MR (the Claude conversation on disk stays) |
-| `d` | Show or hide drafts (hidden by default) |
+| `↑` `↓` or `k` `j` | Move to a different card |
+| `Enter` | Open a Claude session for the selected MR. The tool opens a new tab, or focuses a tab that is already open, or starts a closed session again. For a closed session, the prompt reports the changes after the last poll |
+| `Shift+Enter` or `p` | Open the menu of prompt modes. See below |
+| `o` | Open the MR in the browser, and mark it as seen. This is for macOS only, because the tool starts the `open` program |
+| `m` | Mark each MR as seen |
+| `x` | Delete the connection between this MR and its session. The Claude conversation on the disk stays |
+| `d` | Show or hide the drafts. The tool hides them by default |
 | `r` | Refresh now |
-| `q` / `Esc` | Quit |
+| `q` or `Esc` | Stop the tool |
 
-`Shift+Enter` needs a terminal that speaks the kitty keyboard protocol; `p` does the same thing everywhere. The menu offers four modes:
+The `Shift+Enter` key needs a terminal with the kitty keyboard protocol. The `p` key does the same thing in each terminal. The menu has four modes:
 
-- **Drive to approved** / **Surface review + narrow spots** — the default, and what plain `Enter` uses. Which of the two it is depends on whether the MR is yours.
-- **Only my threads** — just the unresolved threads you took part in.
+- **Drive to approved**, or **Surface review + narrow spots**. This is the default mode, and it is the mode for the Enter key. The tool selects between the two by the owner of the MR.
+- **Only my threads**. This mode uses the unresolved threads with your notes only.
 - **Deep review (full diff)**.
-- **Start new session (no prompt)** — Claude in the right repository with nothing to answer. It still knows which merge request you were looking at: the context (title, URL, pipeline, approvals, unresolved threads) is appended to the system prompt, so your first message can be the question instead of the background.
+- **Start new session (no prompt)**. Claude starts in the correct repository, and it has no question to answer. But it knows your MR: the tool puts the data in the system prompt — the title, the URL, the pipeline, the approvals, and the unresolved threads. So your first message can be the question, and not the background.
 
-The list reloads by itself every 300 seconds.
+The tool refreshes the list automatically each 300 seconds.
 
 ### Mouse support (off by default)
 
-Set `"mouse": true` in `config.json`, or `MESSREQ_MOUSE=1` — [same precedence](#environment-variables) as `terminal` and `open_mode`. The wheel then moves the selection one card at a time, the step `k`/`j` take, and a left click selects the card under the pointer. Clicking anywhere else — a section header, the gap between cards, the space below the last one — does nothing.
+To use the wheel and the clicks, put `"mouse": true` in `config.json`, or set `MESSREQ_MOUSE=1`. The [sequence](#environment-variables) is the same as for `terminal` and `open_mode`. The wheel then moves the selection one card at a time, which is the same step as the `k` and `j` keys. A click with the left button selects the card below the pointer. A click at a different location does nothing: a section heading, the space between two cards, and the space below the last card.
 
-A click never opens or resumes a session; `Enter` stays the only way. Opening one spawns a tab or pane and starts a process, which is too much to hang on a misplaced click, so there is no double-click handling either.
+A click does not open a session, and it does not start a session again. The Enter key is the only method. A session opens a tab or a pane, and it starts a process, which is too much for an accidental click. The tool also has no action for a double click.
 
-It is off by default because turning it on hands the mouse to the application, and the terminal's own click-drag text selection stops working — no more copying an MR title the usual way. Most terminals keep an override for that (hold Option in iTerm2; tmux has its copy mode).
+This function is off by default, because it gives the mouse to the application. The terminal then cannot select text with the mouse, and you cannot copy the title of an MR with the usual method. Most terminals keep an alternative method: in iTerm2, hold the Option key; tmux has a copy mode.
 
 ## Other run modes
 
 ```bash
-messreq                    # the TUI
-messreq --plain            # (= --once) one textual dump of the MR list, then exit
-messreq --snapshot         # render a single TUI frame to text (118×46) — layout
-                           # checking without a real terminal; read-only — never
-                           # marks MRs seen or prunes worktabs/seen state
-messreq --prompt <iid>     # print the prompt that Enter would send for this MR
-messreq --dump-prompts     # write the built-in prompt templates to ~/.config/messreq/prompts/
-messreq --notify           # one notification pass, for mrdash-gui (see below)
-messreq --help             # (= -h) the one-screen summary of all of this
+messreq                    # the terminal interface
+messreq --plain            # (= --once) print the list of MRs as text, then stop
+messreq --snapshot         # print one frame of the interface as text (118×46) —
+                           # examine the layout without a terminal. This mode is
+                           # read-only: it marks no MR as seen, and it deletes no
+                           # state
+messreq --prompt <iid>     # print the prompt that the Enter key sends for this MR
+messreq --dump-prompts     # write the default prompt templates to ~/.config/messreq/prompts/
+messreq --notify           # one notification pass, for mrdash-gui. See below
+messreq --help             # (= -h) a summary of all of this, on one screen
 ```
 
-Every one of these also takes the environment variables from [Environment variables](#environment-variables) — they are run-scoped, so `MESSREQ_TERMINAL=tmux messreq` pins a backend for one run without editing `config.json` and remembering to revert it. That is also how a `launchd` agent running `--notify` would pin one, through its own `EnvironmentVariables` block: it has no flag for it.
+Each of these modes also reads the variables in [Environment variables](#environment-variables). Those variables apply to one run. So `MESSREQ_TERMINAL=tmux messreq` sets a backend for that run, and you do not edit `config.json` and change it back after. A `launchd` agent that runs `--notify` sets a backend in the same way, in its `EnvironmentVariables` block, because that mode has no flag for it.
 
-Inside tmux, a session opens as a pane beside the dashboard by default — tmux's own `main-vertical` layout keeps the dashboard at a fixed share of the width (`"pane_width"` in config.json, default 50%) no matter how many session panes are open. Set `"open_mode": "window"` in config.json (or `MESSREQ_OPEN_MODE=window`) to get a new tmux window per session instead.
+In tmux, a session opens as a pane adjacent to the dashboard by default. The `main-vertical` layout of tmux keeps the same width for the dashboard, and the number of open panes has no effect on it. The `"pane_width"` key in `config.json` sets that width, and the default is 50 percent. To open a new tmux window for each session, put `"open_mode": "window"` in `config.json`, or set `MESSREQ_OPEN_MODE=window`.
 
 ## Notifications
 
-The dashboard sends desktop notifications itself, as part of its own refresh — there is nothing to install and nothing to configure. Every 300 seconds it reloads the list, compares it against the snapshot from the previous pass, and tells you what changed: a new MR you have to review, an approval on your own MR, your pipeline turning red, the turn switching to you, an MR that got merged or closed. More than four changes collapse into a single summary.
+The dashboard sends the desktop notifications itself, as part of its refresh. You install nothing, and you configure nothing. Each 300 seconds it reads the list again, and it compares that list with the snapshot from the last pass. It then tells you what changed. It reports five changes:
 
-**Notifications arrive only while the dashboard is open.** That is the deliberate shape of this tool, not a limitation waiting to be lifted: nothing polls your GitLab instance in the background, so there are no VPN prompts and no notifications at midnight. Close the dashboard and the polling stops with it.
+- a new MR for your review;
+- an approval on your MR;
+- a failed pipeline;
+- a change of the person who must act;
+- an MR that a person merged or closed.
 
-Two safeguards are worth knowing about, because both look like bugs the first time you hit them:
+If there are more than four changes, the tool sends one summary.
 
-- **The first pass is silent.** With no snapshot on disk yet, the current state is recorded as the baseline and nothing is sent — otherwise your first launch would announce every MR you already knew about.
-- **An empty response is treated as a failed request**, not as "every MR got closed". If the VPN drops or the token expires, the snapshot is left alone and no avalanche of false "merged" notifications goes out.
+**The tool sends a notification only when the dashboard is open.** This is intentional, and it is not a limitation for a future version. No process reads your GitLab instance in the background. So there are no VPN messages, and there are no notifications at midnight. Close the dashboard, and the tool stops.
 
-`terminal-notifier`, if installed, gets you a notification you can click to open the MR; without it the fallback is `osascript`, which cannot carry a link. Both are macOS-only, so on Linux nothing is delivered at all — see [Linux](#linux).
+Two safeguards are important, because each one looks like a defect the first time:
 
-There is also a `messreq --notify` run mode: one pass over a list it fetches itself, then exit. The TUI no longer needs it — it exists for the sibling `mrdash-gui`, which shares these state files but has no notifications of its own. That mode refuses to touch GitLab unless a dashboard is open: both apps refresh a heartbeat file on every tick, and if that heartbeat is older than 120 seconds, `--notify` exits before making a single request. If you drive it from a `launchd` agent, keep the interval at 300 seconds — it runs its own full load, so polling more often only duplicates what the dashboard is already fetching.
+- **The first pass is silent.** There is no snapshot on the disk yet, so the tool records the current state and sends nothing. Without this safeguard, your first run gives you a notification for each MR that you already know.
+- **The tool reads an empty response as a failed request**, and not as "a person closed each MR". If the VPN stops, or the token becomes invalid, the tool keeps the snapshot and sends no false "merged" notifications.
+
+If you install `terminal-notifier`, each notification contains a link to the MR, and you can click it. Without `terminal-notifier`, the tool uses `osascript`, which cannot show a link. The two programs are for macOS only. So the tool sends no notification on Linux. See the [Linux](#linux) section.
+
+There is also the `messreq --notify` run mode. It reads the list itself, does one pass, and stops. The terminal interface no longer needs this mode. It is for `mrdash-gui`, which uses the same state files but has no notifications of its own. That mode does not read GitLab if no dashboard is open. The two applications write to a heartbeat file at each tick. If that file is more than 120 seconds old, `--notify` stops before its first request. If a `launchd` agent runs this mode, use an interval of 300 seconds. The mode reads the full list, so a shorter interval only repeats the work of the dashboard.
 
 ## State on disk
 
-Everything is under `~/.local/state/messreq/`:
+All the files are in `~/.local/state/messreq/`:
 
 | File | Contents |
 |---|---|
-| `worktabs.json` | which Claude session belongs to which MR |
-| `seen.json` | the last `updated_at` you saw per MR — the 🆕 badge is computed from it |
-| `state.json` | the fingerprint snapshot that `--notify` diffs against |
-| `heartbeat` | an empty file whose mtime the TUI refreshes on every tick |
-| `prompts/` | the generated prompt text per session |
+| `worktabs.json` | the Claude session for each MR |
+| `seen.json` | the last `updated_at` value that you saw for each MR. The tool calculates the 🆕 badge from this value |
+| `state.json` | the snapshot that `--notify` compares against |
+| `heartbeat` | an empty file. The terminal interface changes its time at each tick |
+| `prompts/` | the prompt text for each session |
 
-On the very first run, empty `seen.json` and `state.json` are treated as a quiet baseline: the current state is recorded without highlighting anything and without a burst of notifications.
+At the first run, `seen.json` and `state.json` are empty. The tool reads this as a quiet start: it records the current state, it highlights no MR, and it sends no notification.
 
-Entries for MRs that disappear from the response are pruned automatically, along with their orphaned prompt files.
+The tool deletes the entry for each MR that is no longer in the response. It also deletes the prompt files of that MR.
 
 ## About the name
 
-This repository is `messrequess`; the command, the crate, the binary, and every on-disk path (`~/.local/state/messreq/`, `~/.config/messreq/`) are `messreq`. If you are upgrading from an install that predates the rename, the first run carries your old `~/.local/state/mrdash/` and `~/.config/mrdash/` forward automatically — session bindings, seen/notification state and any custom prompts survive, and nothing is deleted or overwritten in the process.
+The name of this repository is `messrequess`. The command, the crate, the binary, and each path on the disk are `messreq`. Those paths are `~/.local/state/messreq/` and `~/.config/messreq/`. If you have an installation from before this change of name, the first run moves your old `~/.local/state/mrdash/` and `~/.config/mrdash/` data to the new locations. This is automatic. Your session connections, your seen and notification state, and your prompt templates stay. The tool deletes and replaces nothing.
 
 ## Related
 
-`mrdash-gui` is a private GUI sibling of this dashboard, built on eframe. It reads the same state files, and it was not covered by the rename — so if you happen to run both, point it at `~/.local/state/messreq/` as well, or the migration above moves the state out from under it.
+`mrdash-gui` is a private GUI version of this dashboard, and it uses eframe. It reads the same state files. The change of name above does not include it. So, if you use the two tools, set `mrdash-gui` to `~/.local/state/messreq/` also. If you do not, the migration above moves the state away from it.
 
 ## Bugs and contributions
 
-Report bugs and send patches as GitHub issues and pull requests. There is no separate process and no template to fill in.
+Report a bug as a GitHub issue, and send a patch as a pull request. There is no other process, and there is no template.
 
-Ids like `messreq-m3d` appear throughout this file. They belong to the project's own issue tracker — [beads](https://github.com/gastownhall/beads), stored in this repository's `refs/dolt/data` rather than in the working tree, so browsing it needs the `bd` tool and a clone. They are quoted here so that a known gap has a stable name; you do not need the tracker to use the tool or to contribute to it.
+This document contains identifiers such as `messreq-m3d`. They are entries in the issue tracker of this project, which is [beads](https://github.com/gastownhall/beads). The tracker is in `refs/dolt/data` of this repository, and not in the work tree. To read it, you need the `bd` tool and a clone. These identifiers give a stable name to a known limitation. You do not need the tracker to use this tool, or to contribute to it.
 
-Before a pull request, run the four gates CI runs, in order: `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --release --locked`. Clippy is strict — one warning fails the build.
+Before you send a pull request, run the four gates of the CI, in this sequence:
+
+```bash
+cargo fmt --all -- --check
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+cargo build --release --locked
+```
+
+Clippy is strict: one warning stops the build.
 
 ## License
 
-Dual-licensed under either of
+You can use this software under one of these two licenses:
 
 - MIT license ([LICENSE-MIT](LICENSE-MIT))
 - Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 
-at your option.
+Select the license that you prefer.
 
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+If you contribute to this project, and you do not give different conditions, your contribution has the same two licenses. This applies to each contribution that you send for this project, as the Apache-2.0 license defines it. There are no other terms and no other conditions.
