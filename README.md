@@ -47,7 +47,7 @@ A terminal dashboard for GitLab merge requests: the ones you opened, and the one
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-*One frame from `messreq --snapshot`, the tool's own read-only frame dump, rendered here against invented merge requests. The red-bordered card is the one waiting on you; `▶` marks the selection.*
+*One frame from `messreq --snapshot`, the tool's own read-only frame dump, rendered here against invented merge requests. The heavy-bordered card — red, in a real terminal — is the one waiting on you; `▶` marks the selection.*
 
 ## Read this before installing
 
@@ -142,13 +142,13 @@ cargo build --release         # target/release/messreq
 
 Then check the prerequisites before the first run. There is no `messreq --version`; the version lives in `Cargo.toml` and in the git tags the badge above reads.
 
-To remove it: `cargo uninstall messreq` (or delete the binary and the symlink, if you built in place), then `~/.local/state/messreq/` and `~/.config/messreq/` for the state and the config. Nothing is written anywhere else.
-
 ```bash
 glab auth status              # must show an authenticated host
 it2 session list              # must print sessions, not an API error
 claude --version
 ```
+
+To remove it: `cargo uninstall messreq` (or delete the binary and the symlink, if you built in place), then `~/.local/state/messreq/` and `~/.config/messreq/` (or `$XDG_CONFIG_HOME/messreq/`) for the state and the config. Nothing is written anywhere else.
 
 ## Configure
 
