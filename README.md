@@ -1,34 +1,89 @@
 # messreq
 
 [![CI](https://github.com/piligrimnick/messrequess/actions/workflows/ci.yml/badge.svg)](https://github.com/piligrimnick/messrequess/actions/workflows/ci.yml)
-[![version](https://img.shields.io/badge/version-v0.1.0-blue)](https://github.com/piligrimnick/messrequess/tags)
+[![version](https://img.shields.io/github/v/tag/piligrimnick/messrequess?label=version&color=blue)](https://github.com/piligrimnick/messrequess/tags)
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
-[![platform](https://img.shields.io/badge/platform-macOS-lightgrey)](#read-this-before-installing)
+[![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#linux)
 
 A terminal dashboard for GitLab merge requests: the ones you opened, and the ones where you are a reviewer. For each MR it shows approvals, pipeline status, unresolved threads and merge-train position — and, more usefully, a computed answer to **"whose turn is it"**. Press Enter on a card and a new session opens — an iTerm2 tab or a tmux pane, whichever backend you are using — with Claude Code already holding that MR's context.
 
+```
+╭ 🧭 messreq ────────────────────────────────────────────────────────────────────────────────────────────────────────╮
+│                                                                                                                    │
+│   mine: 3     reviewing: 2     🔨 in progress: 0     🗂 drafts hidden: 1 (d)     updated 0s ago · ↻ 300s            │
+│                                                                                                                    │
+│   MY MRs (3)                                                                                                       │
+│                                                                                                                    │
+│   ┏ ▶ !418 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ → reply ┓   │
+│   ┃ Cache the invoice PDF renderer                                                                             ┃   │
+│   ┃ ✅ 1 approvals     🟢 success     💬 1 threads     🗓 1w · ✎ just now     🚄 train #1 · running             ┃   │
+│   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛   │
+│                                                                                                                    │
+│   ╭ !415 ─────────────────────────────────────────────────────────────────────────────────────────────── CI 🔴 ╮   │
+│   │ Drop the legacy /v1 billing endpoints                                                                      │   │
+│   │ ⚪ 0 approvals     🔴 failed     💬 2 threads     🗓 1w · ✎ 8h                                              │   │
+│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│                                                                                                                    │
+│   ╭ !77 ────────────────────────────────────────────────────────────────────────────────────── awaiting review ╮   │
+│   │ Move the settings drawer to the new layout                                                                 │   │
+│   │ ⚪ 0 approvals     🟠 running     💬 0 threads     🗓 1w · ✎ just now                                       │   │
+│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│                                                                                                                    │
+│   REVIEWING (2)                                                                                                    │
+│                                                                                                                    │
+│   ╭ !421 ───────────────────────────────────────────────────────────────────────────────────────── → your turn ╮   │
+│   │ Retry webhook delivery with a capped backoff                                                               │   │
+│   │ 👤 marco     🟢 success     💬 1 threads     🗓 1w · ✎ just now                                             │   │
+│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│                                                                                                                    │
+│   ╭ !79 ────────────────────────────────────────────────────────────────────────────────────────── ✅ approved ╮   │
+│   │ Fix the date picker on the annual plan                                                                     │   │
+│   │ 👤 priya     🟢 success     💬 0 threads     🗓 1w · ✎ 1d                                                   │   │
+│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│                                                                                                                    │
+│                                                                                                                    │
+│    ↑↓ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  r refresh  q quit                            │
+│                                                                                                                    │
+╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
+```
+
+*One frame from `messreq --snapshot`, the tool's own read-only frame dump, rendered here against invented merge requests. The red-bordered card is the one waiting on you; `▶` marks the selection.*
+
 ## Read this before installing
 
-This is one person's tool, published because someone else might find it useful. It is not a product and it does not try to work everywhere. It assumes a very specific setup, and if you don't have that setup it will not work — not "work with reduced functionality", but not work.
+This is one person's tool, published because someone else might find it useful. It is not a product and it does not try to work everywhere. It assumes a specific setup. Two things are hard requirements — an authenticated `glab` and a Rust toolchain to build with — and without them it does not start at all. The rest of the table is what the Claude-session feature needs; skip it and you still get the dashboard.
 
 **The version is 0.1.0, and it means what it says.** One person uses this daily on one machine; that is the whole test matrix. Config keys, prompt template names, the state file formats and the flags can all change without a deprecation period, and there is no changelog to read before upgrading. `v0.1.0` is tagged, so you can pin it with `cargo install --git https://github.com/piligrimnick/messrequess --tag v0.1.0`; installing without `--tag` builds whatever `main` currently holds.
 
 | Requirement | Why | Optional? |
 |---|---|---|
-| **macOS** | It shells out to `osascript`, `open` and `launchd` | No. Linux is not supported today |
-| **iTerm2**, with the **Python API enabled** | Sessions are opened and driven through iTerm2's API (Settings → General → Magic → *Enable Python API*) | No, for the Claude feature |
-| **`it2`** — the iTerm2 CLI from PyPI (`uv tool install it2`, or `pipx install it2`) | Creates the tab, sends input, focuses the session | No, for the Claude feature |
+| **macOS**, or **Linux** | Every external program is a child process, so nothing in the dashboard itself is tied to one OS. Two features still are: desktop notifications and the `o` key | No. Read [Linux](#linux) for what does and does not work there |
+| A terminal backend: **iTerm2** with the **Python API enabled** (Settings → General → Magic → *Enable Python API*), **or tmux** | Sessions are opened and driven through one of the two. messreq picks one itself unless you name it — see the `terminal` config key | No, for the Claude feature. Either one will do |
+| **`it2`** — the iTerm2 CLI from PyPI (`uv tool install it2`, or `pipx install it2`) | Creates the tab, sends input, focuses the session | Yes, if you use the tmux backend |
 | **`glab`**, already authenticated | All GitLab access is `glab api …`. There is no HTTP client and no token handling of its own — if `glab` can't reach your instance, neither can this | No |
-| **Claude Code CLI** (`claude`) | It is what gets launched in the new tab | No, for the Claude feature |
+| **Claude Code CLI** (`claude`) | It is what gets launched in the new tab or pane | No, for the Claude feature |
 | **Rust toolchain** | There is no binary distribution yet; you build from source | No |
-| `terminal-notifier` | Nicer notifications with a clickable URL; falls back to `osascript` | Yes |
+| `terminal-notifier` | Nicer notifications with a clickable URL; falls back to `osascript`. macOS only — both of them are | Yes |
 
-Three more things that trip people up:
+Two more things that trip people up:
 
 - A **self-hosted GitLab instance usually means being on its VPN.** Without it, `glab` fails: at startup the binary prints an authentication error and exits, and a failed refresh mid-session leaves the list empty. An empty response is deliberately treated as a failed request rather than "all your MRs got closed", so the snapshot is left alone and you don't get an avalanche of false "merged" notifications.
 - There is **no Homebrew tap yet**, so installing means building from source.
 
 If the dashboard part is all you want, you can skip iTerm2, `it2` and Claude Code: the list, the badges and the notifications work without them. Enter then fails with a popup naming what did not work — either the missing config file or the session that never started.
+
+### Linux
+
+macOS is the machine this is developed on, and it is the only one anything is tested on daily. Linux still works for most of what the tool does. A smoke test on Ubuntu 26.04 (aarch64, tmux 3.6) covered the documented install path — `cargo install --git … --tag v0.1.0` against an anonymous clone — the whole test suite including the seven tests that drive a real tmux server, and the data path down to a rendered frame.
+
+What works there: the dashboard and everything on a card, the tmux backend (open, list, send, focus, and the pane-vs-window placement), backend auto-detection, and every auxiliary run mode.
+
+Two things do not:
+
+- **Desktop notifications are dropped without a word.** Delivery goes through `terminal-notifier` and falls back to `osascript`; neither program exists on Linux, and both calls ignore the failure. The pass still computes the diff and still rewrites `state.json`, so nothing looks wrong — it is simply always quiet. A `notify-send` path is tracked as `messreq-m3d`.
+- **The `o` key does nothing.** It shells out to `open`, which is macOS-only; Linux wants `xdg-open`. Same issue.
+
+One more thing behaves differently rather than failing. Started from a plain terminal window, messreq is not inside tmux, so there is no session to put the new pane in and the tmux backend creates a detached one named `messreq` instead. Claude does start and the binding is recorded, but nothing shows up on screen until you run `tmux attach -t messreq` yourself. Start messreq from inside tmux and the pane opens beside the dashboard, the way it does on macOS.
 
 ## Why it exists
 
@@ -63,7 +118,7 @@ Notifications key off the same computation, so "needs action" means the same thi
 
 ## Install
 
-Read the requirements table above first — `glab`, iTerm2 and the Claude Code CLI are checked for at runtime, not at build time, so a successful build tells you nothing about whether the tool will work for you.
+Read the requirements table above first — `glab`, the terminal backend and the Claude Code CLI are checked for at runtime, not at build time, so a successful build tells you nothing about whether the tool will work for you.
 
 ```bash
 cargo install --git https://github.com/piligrimnick/messrequess
@@ -85,7 +140,9 @@ Or build in place and symlink it yourself:
 cargo build --release         # target/release/messreq
 ```
 
-Then check the prerequisites before the first run. There is no `messreq --version`; the version lives in `Cargo.toml` and in the badge above.
+Then check the prerequisites before the first run. There is no `messreq --version`; the version lives in `Cargo.toml` and in the git tags the badge above reads.
+
+To remove it: `cargo uninstall messreq` (or delete the binary and the symlink, if you built in place), then `~/.local/state/messreq/` and `~/.config/messreq/` for the state and the config. Nothing is written anywhere else.
 
 ```bash
 glab auth status              # must show an authenticated host
@@ -120,7 +177,7 @@ Every key it understands:
 | `terminal` | string | auto-detected | Which backend opens sessions: `"iterm2"` or `"tmux"`, case-insensitive. Omit it to let messreq detect one — tmux when messreq itself runs inside tmux, otherwise a working iTerm2, otherwise tmux |
 | `open_mode` | string | `"pane"` | tmux only: `"pane"` splits a pane beside the dashboard, `"window"` opens a new tmux window. No effect outside tmux, which always opens a window |
 | `pane_width` | number | `50` | tmux `"pane"` mode only: the percentage of the window's width the dashboard keeps, clamped to 10–90. Config-only — there is no environment override for this one |
-| `mouse` | bool | `false` | Wheel and click support in the TUI — see [Mouse support](#mouse-support-messreq-9td-off-by-default) for the trade-off |
+| `mouse` | bool | `false` | Wheel and click support in the TUI — see [Mouse support](#mouse-support-off-by-default) for the trade-off |
 
 The file is optional, and so is every key in it. Without the file the dashboard still works — there is just nowhere to open a session, so Enter shows a popup pointing at this file. A file that is not valid JSON is read as *no file at all*: an empty config, no error, no crash. Individual keys are just as forgiving — a value of the wrong type (`"pane_width": "wide"`) is ignored and the default applies.
 
@@ -146,7 +203,7 @@ Every call is `glab api` with the host passed explicitly, because under `launchd
 | `GITLAB_HOST` | The instance every `glab api` call goes to | A hostname; blank counts as unset | First in the host resolution above, ahead of glab's own configuration |
 | `GLAB_CONFIG_DIR` | Where to look for glab's `config.yml` | A directory path | Searched before `$XDG_CONFIG_HOME/glab-cli` and the two `$HOME` locations |
 | `XDG_CONFIG_HOME` | Base of the config directory: `$XDG_CONFIG_HOME/messreq/config.json` | A directory path; empty counts as unset | Wins over `$HOME/.config`. Also used for the legacy-path migration and for finding glab's config — but **not** for prompt templates, see below |
-| `HOME` | Base for the state directory (`~/.local/state/messreq/`), for the config directory when `XDG_CONFIG_HOME` is unset, and for prompt templates | A directory path | Falls back to `.` — the current directory — when unset, which is a last resort, not a feature |
+| `HOME` | Base for the state directory (`~/.local/state/messreq/`), for the config directory when `XDG_CONFIG_HOME` is unset, and for prompt templates | A directory path | Set by your shell; messreq only reads it |
 | `TMUX`, `TMUX_PANE`, `TERM_PROGRAM` | Read, never set by you: tmux and iTerm2 set them. A non-empty `TMUX` makes detection pick tmux; `TERM_PROGRAM=iTerm.app` plus an `it2` probe that answers picks iTerm2; `TMUX_PANE` is how messreq knows which pane is its own | — | — |
 
 **One known inconsistency.** Prompt template overrides are always looked up under `$HOME/.config/messreq/prompts/`, even when `XDG_CONFIG_HOME` points somewhere else — while the config file honours it. Under a non-default `XDG_CONFIG_HOME` your prompt overrides are read from a directory nothing else uses. That is a bug, tracked as `messreq-u0c`, not a deliberate split.
@@ -168,7 +225,7 @@ If `~/.config/messreq/prompts/` still has `.txt` files from before this format c
 | `↑` `↓` / `k` `j` | Move between cards |
 | `Enter` | Claude session for the selected MR: open a new tab, focus the existing one, or resume a closed one (with a prompt reporting what changed since the last poll) |
 | `Shift+Enter` or `p` | Prompt-mode menu (see below) |
-| `o` | Open the MR in the browser (also marks it seen) |
+| `o` | Open the MR in the browser, also marking it seen. macOS only — it shells out to `open` |
 | `m` | Mark everything as seen |
 | `x` | Forget the session binding for this MR (the Claude conversation on disk stays) |
 | `d` | Show or hide drafts (hidden by default) |
@@ -177,23 +234,20 @@ If `~/.config/messreq/prompts/` still has `.txt` files from before this format c
 
 `Shift+Enter` needs a terminal that speaks the kitty keyboard protocol; `p` does the same thing everywhere. The menu offers four modes:
 
-### Mouse support (messreq-9td, off by default)
-
-Set `"mouse": true` in `config.json` (or `MESSREQ_MOUSE=1`, same precedence as `terminal`/`open_mode` — see [Environment variables](#environment-variables)) to turn on the wheel and clicks:
-
-- the wheel moves the selection one card at a time, the same step `k`/`j` take — the list already scrolls by keeping the selection visible (`App::top` is recomputed from wherever it lands), so this reuses that instead of giving the viewport a scroll position of its own;
-- a left click selects the card under the pointer. It never opens or resumes a session — Enter stays the only way to do that. Spawning a session opens a tab/pane and starts a process, and a single accidental click is far too easy to trigger for that to be reversible, so there is no double-click handling either.
-
-Clicking a section header, the gap between cards, or below the last card does nothing rather than selecting a neighbor. While the prompt-mode menu or a popup is open, mouse events are swallowed instead of falling through to the list underneath.
-
-Enabling this makes the terminal claim the mouse (`EnableMouseCapture`), which is a real trade-off: the terminal's own click-drag text selection stops working, so copying an MR title or URL the usual way no longer does. That is why it defaults to **off** — most terminals still offer their own override while an app holds the mouse (in iTerm2, hold Option to select text anyway; tmux has its own copy mode), and turning it on is one config line away for anyone who wants it.
-
 - **Drive to approved** / **Surface review + narrow spots** — the default, and what plain `Enter` uses. Which of the two it is depends on whether the MR is yours.
 - **Only my threads** — just the unresolved threads you took part in.
 - **Deep review (full diff)**.
 - **Start new session (no prompt)** — Claude in the right repository with nothing to answer. It still knows which merge request you were looking at: the context (title, URL, pipeline, approvals, unresolved threads) is appended to the system prompt, so your first message can be the question instead of the background.
 
 The list reloads by itself every 300 seconds.
+
+### Mouse support (off by default)
+
+Set `"mouse": true` in `config.json`, or `MESSREQ_MOUSE=1` — [same precedence](#environment-variables) as `terminal` and `open_mode`. The wheel then moves the selection one card at a time, the step `k`/`j` take, and a left click selects the card under the pointer. Clicking anywhere else — a section header, the gap between cards, the space below the last one — does nothing.
+
+A click never opens or resumes a session; `Enter` stays the only way. Opening one spawns a tab or pane and starts a process, which is too much to hang on a misplaced click, so there is no double-click handling either.
+
+It is off by default because turning it on hands the mouse to the application, and the terminal's own click-drag text selection stops working — no more copying an MR title the usual way. Most terminals keep an override for that (hold Option in iTerm2; tmux has its copy mode).
 
 ## Other run modes
 
@@ -211,7 +265,7 @@ messreq --help             # (= -h) the one-screen summary of all of this
 
 Every one of these also takes the environment variables from [Environment variables](#environment-variables) — they are run-scoped, so `MESSREQ_TERMINAL=tmux messreq` pins a backend for one run without editing `config.json` and remembering to revert it. That is also how a `launchd` agent running `--notify` would pin one, through its own `EnvironmentVariables` block: it has no flag for it.
 
-Inside tmux, a session opens as a pane beside the dashboard by default — tmux's own `main-vertical` layout keeps the dashboard at a fixed share of the width (`"pane_width"` in config.json, default 50%) no matter how many session panes are open. Set `"open_mode": "window"` in config.json (or `MESSREQ_OPEN_MODE=window`) for the pre-messreq-e5t.7 behavior of a new tmux window per session.
+Inside tmux, a session opens as a pane beside the dashboard by default — tmux's own `main-vertical` layout keeps the dashboard at a fixed share of the width (`"pane_width"` in config.json, default 50%) no matter how many session panes are open. Set `"open_mode": "window"` in config.json (or `MESSREQ_OPEN_MODE=window`) to get a new tmux window per session instead.
 
 ## Notifications
 
@@ -224,7 +278,7 @@ Two safeguards are worth knowing about, because both look like bugs the first ti
 - **The first pass is silent.** With no snapshot on disk yet, the current state is recorded as the baseline and nothing is sent — otherwise your first launch would announce every MR you already knew about.
 - **An empty response is treated as a failed request**, not as "every MR got closed". If the VPN drops or the token expires, the snapshot is left alone and no avalanche of false "merged" notifications goes out.
 
-`terminal-notifier`, if installed, gets you a notification you can click to open the MR; without it the fallback is `osascript`, which cannot carry a link.
+`terminal-notifier`, if installed, gets you a notification you can click to open the MR; without it the fallback is `osascript`, which cannot carry a link. Both are macOS-only, so on Linux nothing is delivered at all — see [Linux](#linux).
 
 There is also a `messreq --notify` run mode: one pass over a list it fetches itself, then exit. The TUI no longer needs it — it exists for the sibling `mrdash-gui`, which shares these state files but has no notifications of its own. That mode refuses to touch GitLab unless a dashboard is open: both apps refresh a heartbeat file on every tick, and if that heartbeat is older than 120 seconds, `--notify` exits before making a single request. If you drive it from a `launchd` agent, keep the interval at 300 seconds — it runs its own full load, so polling more often only duplicates what the dashboard is already fetching.
 
@@ -250,7 +304,15 @@ This repository is `messrequess`; the command, the crate, the binary, and every 
 
 ## Related
 
-`mrdash-gui` is a GUI variant of the same dashboard, built on eframe, in its own repository not covered by this rename. It shares the state files with this one — if you run both, update `mrdash-gui` to the same `~/.local/state/messreq/` paths too, or it will stop seeing this dashboard's state once the migration above moves it.
+`mrdash-gui` is a private GUI sibling of this dashboard, built on eframe. It reads the same state files, and it was not covered by the rename — so if you happen to run both, point it at `~/.local/state/messreq/` as well, or the migration above moves the state out from under it.
+
+## Bugs and contributions
+
+Report bugs and send patches as GitHub issues and pull requests. There is no separate process and no template to fill in.
+
+Ids like `messreq-m3d` appear throughout this file. They belong to the project's own issue tracker — [beads](https://github.com/gastownhall/beads), stored in this repository's `refs/dolt/data` rather than in the working tree, so browsing it needs the `bd` tool and a clone. They are quoted here so that a known gap has a stable name; you do not need the tracker to use the tool or to contribute to it.
+
+Before a pull request, run the four gates CI runs, in order: `cargo fmt --all -- --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked`, `cargo build --release --locked`. Clippy is strict — one warning fails the build.
 
 ## License
 
