@@ -5,7 +5,7 @@
 [![license](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](#license)
 [![platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)](#linux)
 
-A terminal dashboard for GitLab merge requests. It shows the merge requests that you opened, and the merge requests where you are a reviewer. For each merge request it shows the approvals, the pipeline status, the unresolved threads, and the position in the merge train. It also shows who must act next. Push Enter on a card, and the tool opens a new session with Claude Code. That session already has the data about the merge request. The session opens in an iTerm2 tab or in a tmux pane. The terminal backend controls this.
+A terminal dashboard for GitLab merge requests. It shows the merge requests that you opened, and the merge requests where you are a reviewer. For each merge request it shows the approvals, the pipeline status, the unresolved threads, and the position in the merge train. It also shows who must act next. Press Enter on a card, and the tool opens a new session with Claude Code. That session already has the data about the merge request. The session opens in an iTerm2 tab or in a tmux pane, depending on the terminal backend.
 
 This document uses the abbreviation MR for a merge request.
 
@@ -53,7 +53,7 @@ This document uses the abbreviation MR for a merge request.
 
 ## Read this before you install
 
-One person wrote this tool, and made it public because other persons can find it useful. It is not a product, and it does not operate in all conditions. It needs a specific setup. This section tells you what that setup is.
+One person wrote this tool, and made it public because other people might find it useful. It is not a product, and it does not operate in all conditions. It needs a specific setup. This section tells you what that setup is.
 
 **The version is 0.1.0, and that number is accurate.** One person uses this tool each day, on one machine. That is the full test. The config keys, the names of the prompt templates, the formats of the state files, and the command-line flags can change with no warning. There is no changelog. The tag `v0.1.0` exists, so you can install that version:
 
@@ -77,7 +77,7 @@ The dashboard and the Claude sessions need different programs. So there are two 
 
 - **The Claude Code CLI** (`claude`). This is the program that operates in the new tab or pane.
 - **One terminal backend.** Use tmux, or use iTerm2. For iTerm2, switch on the Python API: Settings → General → Magic → *Enable Python API*. Then install the **`it2`** CLI from PyPI, with `uv tool install it2` or `pipx install it2`. One backend is sufficient. The tool finds a backend automatically, and the `terminal` config key replaces that choice.
-- **A config file** that gives the location of your local checkouts. The [Configure](#configure) section shows this file. It is three lines long.
+- **A config file** that gives the location of your local checkouts. The smallest usable file has one key, `default_path`, between two braces. The [Configure](#configure) section shows all the keys.
 
 If you do not have the items in the second list, the dashboard operates correctly. The Enter key then opens a popup that names the missing item.
 
@@ -87,13 +87,13 @@ If you do not have the items in the second list, the dashboard operates correctl
 
 ### Linux
 
-The developer uses macOS, and only macOS gets a test each day. But Linux operates correctly for the largest part of this tool. A test on Ubuntu 26.04 (aarch64, tmux 3.6) included three steps:
+The developer uses macOS, and only macOS gets a test each day. But the largest part of this tool operates correctly on Linux. A test on Ubuntu 26.04 (aarch64, tmux 3.6) included three steps:
 
 - the documented installation, `cargo install --git … --tag v0.1.0`, from an anonymous clone;
 - the full test suite, together with the seven tests that use a real tmux server;
 - the data path, to a frame on the screen.
 
-These functions operate on Linux: the dashboard and all the data on a card; the tmux backend, which opens, lists, sends, focuses, and selects between a pane and a window; the automatic selection of a backend; and each of the other run modes.
+These functions operate on Linux: the dashboard and all the data on a card; the tmux backend, which opens a session, lists the open sessions, sends input, focuses a pane, and selects between a pane and a window; the automatic selection of a backend; and each of the other run modes.
 
 Two functions do not operate:
 
@@ -129,7 +129,7 @@ For the MR of a different person, the tool again uses the first row that agrees:
 | An unresolved thread has a last note that is not yours | `→ your turn` | yes |
 | All other conditions: you did not approve the MR, and the author waits for no other person | `🔴 needs you` | yes |
 
-Two facts are important here. First, a thread waits for you if the last note in it is not yours. This is correct for each unresolved thread, and not only for the threads that contain your notes. Second, the tool examines the draft condition early. So a draft MR shows the label `draft`, also when its pipeline failed. The tool hides all the drafts until you push `d`.
+Two facts are important here. First, a thread waits for you if the last note in it is not yours. This is correct for each unresolved thread, and not only for the threads that contain your notes. Second, the tool examines the draft condition early. So a draft MR shows the label `draft`, also when its pipeline failed. The tool hides all the drafts until you press `d`.
 
 The notifications use the same calculation. So "needs action" has the same meaning in the terminal and on your desktop.
 
@@ -141,7 +141,7 @@ Read the section [What you need](#what-you-need) first. The tool examines `glab`
 cargo install --git https://github.com/piligrimnick/messrequess
 ```
 
-This command builds the tool from the source, and puts the `messreq` binary in `~/.cargo/bin`. It needs a Rust toolchain and approximately one minute. There are no compiled binaries and no Homebrew tap, so a build is the only method.
+This command builds the tool from the source, and puts the `messreq` binary in `~/.cargo/bin`. It needs a Rust toolchain and approximately one minute.
 
 To get the source code also, make a clone first. Do this to read the code, to change the default prompts in [`prompts/`](prompts/), or to contribute:
 
@@ -196,13 +196,13 @@ These are all the keys that the tool reads:
 | `pane_width` | number | `50` | For the tmux `"pane"` mode only. This is the percent of the window width for the dashboard. The tool limits the value to the range 10 to 90. There is no environment variable for this key |
 | `mouse` | bool | `false` | The wheel and the clicks in the terminal interface. See [Mouse support](#mouse-support-off-by-default) for the disadvantage |
 
-The file is optional, and each key in it is also optional. Without the file, the dashboard operates correctly, but the tool has no location for a session. The Enter key then opens a popup that shows this file. If the file is not correct JSON, the tool reads it as no file: an empty configuration, with no error and no stop. The tool is equally tolerant with each key. If a value has the incorrect type, for example `"pane_width": "wide"`, the tool ignores that value and uses the default.
+The file is optional, and each key in it is also optional. Without the file, the dashboard operates correctly, but the tool has no location for a session. The Enter key then opens a popup that names this file. If the file is not correct JSON, the tool reads it as no file: an empty configuration, with no error and no stop. The tool is equally tolerant with each key. If a value has the incorrect type, for example `"pane_width": "wide"`, the tool ignores that value and uses the default.
 
-There are two exceptions, because an incorrect value in these two keys has no usable default. If `terminal` or `open_mode` has an unknown value, the tool gives an error that names that value. The error does not stop the dashboard. You see it when you push Enter to open a session, and `messreq --plain` prints it at the top of the output.
+There are two exceptions, because an incorrect value in these two keys has no usable default. If `terminal` or `open_mode` has an unknown value, the tool gives an error that names that value. The error does not stop the dashboard. You see it when you press Enter to open a session, and `messreq --plain` prints it at the top of the output.
 
 ### The GitLab host
 
-The tool gives the host with each `glab api` call. This is necessary because `launchd` gives no git repository in the work directory. Without an explicit host, `glab` uses `gitlab.com` with the incorrect token. The tool finds the host one time for each process, in this sequence:
+The tool gives the host with each `glab api` call. This is necessary because under `launchd` the work directory is not a git repository. Without an explicit host, `glab` uses `gitlab.com` with the incorrect token. The tool finds the host one time for each process, in this sequence:
 
 1. `$GITLAB_HOST`, if it has a value.
 2. The first `glab` `config.yml` file in `$GLAB_CONFIG_DIR`, `$XDG_CONFIG_HOME/glab-cli`, `~/Library/Application Support/glab-cli`, or `~/.config/glab-cli`. The tool takes an instance below `hosts:` that has a token. The `host:` key at the top level is not sufficient. `glab` writes `gitlab.com` there at the first run. It does not change that value after you log in to a different instance. The tool uses that key only when more than one instance has a token.
@@ -258,7 +258,7 @@ The `Shift+Enter` key needs a terminal with the kitty keyboard protocol. The `p`
 - **Deep review (full diff)**.
 - **Start new session (no prompt)**. Claude starts in the correct repository, and it has no question to answer. But it knows your MR: the tool puts the data in the system prompt — the title, the URL, the pipeline, the approvals, and the unresolved threads. So your first message can be the question, and not the background.
 
-The tool refreshes the list automatically each 300 seconds.
+The tool refreshes the list automatically every 300 seconds.
 
 ### Mouse support (off by default)
 
@@ -289,12 +289,12 @@ In tmux, a session opens as a pane adjacent to the dashboard by default. The `ma
 
 ## Notifications
 
-The dashboard sends the desktop notifications itself, as part of its refresh. You install nothing, and you configure nothing. Each 300 seconds it reads the list again, and it compares that list with the snapshot from the last pass. It then tells you what changed. It reports five changes:
+The dashboard sends the desktop notifications itself, as part of its refresh. You install nothing, and you configure nothing. Each 300 seconds it reads the list again, and it compares that list with the snapshot from the last pass. It then tells you what changed. It reports five kinds of change:
 
 - a new MR for your review;
 - an approval on your MR;
-- a failed pipeline;
-- a change of the person who must act;
+- a pipeline on your own MR that changes to failed;
+- a change of the person who must act, when that person becomes you;
 - an MR that a person merged or closed.
 
 If there are more than four changes, the tool sends one summary.
@@ -360,4 +360,4 @@ You can use this software under one of these two licenses:
 
 Select the license that you prefer.
 
-If you contribute to this project, and you do not give different conditions, your contribution has the same two licenses. This applies to each contribution that you send for this project, as the Apache-2.0 license defines it. There are no other terms and no other conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in this project by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
