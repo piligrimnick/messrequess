@@ -16,40 +16,40 @@ This document uses the abbreviation MR for a merge request.
 │                                                                                                                    │
 │   MY MRs (3)                                                                                                       │
 │                                                                                                                    │
-│   ┏ ▶ !418 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ → reply ┓   │
-│   ┃ Cache the invoice PDF renderer                                                                             ┃   │
-│   ┃ ✅ 1 approvals     🟢 success     💬 1 threads     🗓 1w · ✎ just now     🚄 train #1 · running             ┃   │
-│   ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛   │
+│   ╔ ▶ !418 ═══════════════════════════════════════════════════════════════════════════════════════════ → reply ╗   │
+│   ║ Cache the invoice PDF renderer                                                                             ║   │
+│   ║ ✅ 1 approvals     🟢 success     💬 1 threads     🗓 1w · ✎ 1d     🚄 train #1 · running                   ║   │
+│   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
-│   ╭ !415 ─────────────────────────────────────────────────────────────────────────────────────────────── CI 🔴 ╮   │
-│   │ Drop the legacy /v1 billing endpoints                                                                      │   │
-│   │ ⚪ 0 approvals     🔴 failed     💬 2 threads     🗓 1w · ✎ 8h                                              │   │
-│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│   ╔ !415 ═══════════════════════════════════════════════════════════════════════════════════════════════ CI 🔴 ╗   │
+│   ║ Drop the legacy /v1 billing endpoints                                                                      ║   │
+│   ║ ⚪ 0 approvals     🔴 failed     💬 2 threads     🗓 1w · ✎ 1d                                              ║   │
+│   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
-│   ╭ !77 ────────────────────────────────────────────────────────────────────────────────────── awaiting review ╮   │
-│   │ Move the settings drawer to the new layout                                                                 │   │
-│   │ ⚪ 0 approvals     🟠 running     💬 0 threads     🗓 1w · ✎ just now                                       │   │
-│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│   ╔ !77 ══════════════════════════════════════════════════════════════════════════════════════ awaiting review ╗   │
+│   ║ Move the settings drawer to the new layout                                                                 ║   │
+│   ║ ⚪ 0 approvals     🟠 running     💬 0 threads     🗓 1w · ✎ 1d                                             ║   │
+│   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
 │   REVIEWING (2)                                                                                                    │
 │                                                                                                                    │
-│   ╭ !421 ───────────────────────────────────────────────────────────────────────────────────────── → your turn ╮   │
-│   │ Retry webhook delivery with a capped backoff                                                               │   │
-│   │ 👤 marco     🟢 success     💬 1 threads     🗓 1w · ✎ just now                                             │   │
-│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│   ╔ !421 ═════════════════════════════════════════════════════════════════════════════════════════ → your turn ╗   │
+│   ║ Retry webhook delivery with a capped backoff                                                               ║   │
+│   ║ 👤 marco     🟢 success     💬 1 threads     🗓 1w · ✎ 1d                                                   ║   │
+│   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
-│   ╭ !79 ────────────────────────────────────────────────────────────────────────────────────────── ✅ approved ╮   │
-│   │ Fix the date picker on the annual plan                                                                     │   │
-│   │ 👤 priya     🟢 success     💬 0 threads     🗓 1w · ✎ 1d                                                   │   │
-│   ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────╯   │
+│   ╔ !79 ══════════════════════════════════════════════════════════════════════════════════════════ ✅ approved ╗   │
+│   ║ Fix the date picker on the annual plan                                                                     ║   │
+│   ║ 👤 priya     🟢 success     💬 0 threads     🗓 1w · ✎ 3d                                                   ║   │
+│   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
 │                                                                                                                    │
-│    ↑↓ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  r refresh  q quit                            │
+│    ↑↓←→ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  v columns  r refresh  q quit               │
 │                                                                                                                    │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
 
-*The command `messreq --snapshot` made this frame. All the merge requests in it are invented. The card with the heavy border is the card that waits for you. In a terminal, that border is red. The symbol `▶` shows the selected card.*
+*The command `MESSREQ_LAYOUT=list messreq --snapshot` made this frame, and all the merge requests in it are invented. This is the `list` layout, one card per row. A terminal 100 columns wide or more starts in `columns` instead, and `v` cycles through `list`, `columns` and `tiles`. The card with the `▶` is the selected one — in a terminal it also has a background, and its border shows the colour of its label.*
 
 ## Read this before you install
 
@@ -181,7 +181,8 @@ The config file is at `$XDG_CONFIG_HOME/messreq/config.json` when `XDG_CONFIG_HO
   "terminal": "tmux",
   "open_mode": "pane",
   "pane_width": 50,
-  "mouse": false
+  "mouse": false,
+  "layout": "columns"
 }
 ```
 
@@ -195,6 +196,7 @@ These are all the keys that the tool reads:
 | `open_mode` | string | `"pane"` | For tmux only. The value `"pane"` divides the window, and puts a pane adjacent to the dashboard. The value `"window"` opens a new tmux window. This key has no effect outside tmux, because iTerm2 always opens a tab |
 | `pane_width` | number | `50` | For the tmux `"pane"` mode only. This is the percent of the window width for the dashboard. The tool limits the value to the range 10 to 90. There is no environment variable for this key |
 | `mouse` | bool | `false` | The wheel and the clicks in the terminal interface. See [Mouse support](#mouse-support-off-by-default) for the disadvantage |
+| `layout` | string | from the width | The layout at the start: `"list"` (one card in each row), `"columns"` (two cards), or `"tiles"` (taller cards, and more of them in each row on a wide screen). If you remove this key, the tool uses the terminal width. Less than 100 columns gives `list`, 100 columns gives `columns`, and 160 columns gives `tiles`. The `v` key changes the layout later, and the tool does not write that change to this file |
 
 The file is optional, and each key in it is also optional. Without the file, the dashboard operates correctly, but the tool has no location for a session. The Enter key then opens a popup that names this file. If the file is not correct JSON, the tool reads it as no file: an empty configuration, with no error and no stop. The tool is equally tolerant with each key. If a value has the incorrect type, for example `"pane_width": "wide"`, the tool ignores that value and uses the default.
 
@@ -215,6 +217,7 @@ The tool gives the host with each `glab api` call. This is necessary because und
 |---|---|---|---|
 | `MESSREQ_TERMINAL` | Sets the terminal backend for one run | `iterm2` or `tmux`. The letter case and the spaces at the two ends have no effect | This variable replaces the `terminal` key **and** the automatic selection. With no value, the tool uses them. An unknown value is an error |
 | `MESSREQ_OPEN_MODE` | For tmux only. Sets how a session opens when messreq operates in tmux | `pane` or `window`. The letter case and the spaces at the two ends have no effect | This variable replaces the `open_mode` key, and then the `pane` default. With no value, the tool uses them. An unknown value is an error |
+| `MESSREQ_LAYOUT` | Sets the layout at the start for one run | `list`, `columns`, or `tiles`. The letter case and the spaces at the two ends have no effect | This variable replaces the `layout` key **and** the width rule. With no value, the tool uses them. An unknown value is an error |
 | `MESSREQ_MOUSE` | The wheel and the clicks in the terminal interface | `1`, `true`, `yes`, `on`, or `0`, `false`, `no`, `off`. The letter case has no effect | This variable replaces the `mouse` key, and then the off default. With no value, **or with an unknown value**, the tool uses them. This is different from the two variables above, where an unknown value is an error |
 | `MESSREQ_DEBUG` | Prints data about each `glab` call that fails, and the output of `glab auth status` | Each value, and also an empty value. The tool examines only the presence of the variable | — |
 | `GITLAB_HOST` | The instance for each `glab api` call | A host name. An empty value has the same effect as no variable | Step 1 in the sequence above, before the configuration of `glab` |
@@ -241,13 +244,15 @@ Your `~/.config/messreq/prompts/` directory can contain `.txt` files from an ear
 
 | Key | Action |
 |---|---|
-| `↑` `↓` or `k` `j` | Move to a different card |
+| `↑` `↓` or `k` `j` | Move to the card one row up or down. The tool keeps the column, and it uses the last card of the row if that row is more narrow. The move goes from the last row to the first row again |
+| `←` `→` or `h` `l` | Move to the card on the left or on the right in the same row. The move stops at the two ends of the row. In the `list` layout each row has one card, so these keys do nothing |
 | `Enter` | Open a Claude session for the selected MR. The tool opens a new tab, focuses the session if an agent is already running in it, or starts a closed session again. For a closed session, the prompt reports the changes after the last poll |
 | `Shift+Enter` or `p` | Open the menu of prompt modes. See below |
 | `o` | Open the MR in the browser, and mark it as seen. This is for macOS only, because the tool starts the `open` program |
 | `m` | Mark each MR as seen |
 | `x` | Delete the connection between this MR and its session. The Claude conversation on the disk stays |
 | `d` | Show or hide the drafts. The tool hides them by default |
+| `v` | Change the layout: `list`, then `columns`, then `tiles`. The tool keeps this change for this run only |
 | `r` | Refresh now |
 | `q` or `Esc` | Stop the tool |
 
@@ -262,7 +267,7 @@ The tool refreshes the list automatically every 300 seconds.
 
 ### Mouse support (off by default)
 
-To use the wheel and the clicks, put `"mouse": true` in `config.json`, or set `MESSREQ_MOUSE=1`. The [sequence](#environment-variables) is the same as for `terminal` and `open_mode`. The wheel then moves the selection one card at a time, which is the same step as the `k` and `j` keys. A click with the left button selects the card below the pointer. A click at a different location does nothing: a section heading, the space between two cards, and the space below the last card.
+To use the wheel and the clicks, put `"mouse": true` in `config.json`, or set `MESSREQ_MOUSE=1`. The [sequence](#environment-variables) is the same as for `terminal` and `open_mode`. The wheel then moves the selection one card at a time, in the sequence of the cards on the screen. The wheel is a scroll, and not a move in the grid. So in the `columns` and `tiles` layouts it does not do the same as `k` and `j`, which move one full row. A click with the left button selects the card below the pointer. A click at a different location does nothing: a section heading, the space between two cards, the space between two columns, and the space below the last card.
 
 A click does not open a session, and it does not start a session again. The Enter key is the only method. A session opens a tab or a pane, and it starts a process, which is too much for an accidental click. The tool also has no action for a double click.
 

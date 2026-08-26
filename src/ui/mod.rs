@@ -3,6 +3,7 @@
 
 mod app;
 mod card;
+pub(crate) mod layout;
 mod menu;
 mod popup;
 mod screen;
@@ -16,6 +17,7 @@ use ratatui::crossterm::event::{
 
 use app::{App, ConfirmOverwrite, PromptMenu};
 use card::truncate;
+use layout::Direction;
 use menu::{decide, MenuAction, MenuItem};
 use screen::ui;
 
@@ -29,6 +31,9 @@ use crate::work::{
 };
 
 const REFRESH_SECS: u64 = 300;
+/// The frame `--snapshot` renders, in columns and rows.
+const SNAPSHOT_W: u16 = 118;
+const SNAPSHOT_H: u16 = 46;
 const SPIN: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 pub fn print_plain(items: &[MergeRequest]) {
@@ -88,7 +93,15 @@ pub fn print_plain(items: &[MergeRequest]) {
 
 /// The interactive TUI: set the terminal up, run the event loop, put it back.
 pub fn run_tui(me: String) -> std::io::Result<()> {
-    let mut app = App::new(me);
+    // The width the startup layout is picked from (messreq-2lx), read before
+    // ratatui takes the terminal over — `size()` works either way, but the
+    // answer belongs to the terminal the user sized, not to anything the TUI
+    // has done to it. A terminal that will not report its size falls through
+    // to `list`, the arrangement that fits the narrowest window.
+    let term_width = ratatui::crossterm::terminal::size()
+        .map(|(w, _)| w)
+        .unwrap_or(0);
+    let mut app = App::new(me, term_width);
     let mut terminal = ratatui::init();
 
     // Ask the terminal to tell Shift+Enter apart (kitty keyboard protocol). Works
@@ -130,13 +143,20 @@ pub fn run_tui(me: String) -> std::io::Result<()> {
 /// terminal). Read-only: unlike the live TUI, this must not acknowledge MRs
 /// as seen or prune worktabs/seen entries on disk (messreq-9b5.2) — the
 /// frame it renders is otherwise identical to what the real TUI would show.
+///
+/// That "otherwise identical" includes the layout: `SNAPSHOT_W` is fed to
+/// the same width rule a real terminal is (messreq-2lx), so at 118 columns
+/// the snapshot comes out in `columns`, not in the `list` it used to show.
+/// Pinning it to `list` would make the one artifact that exists to show what
+/// the tool looks like show something the tool no longer does at that width.
+/// `MESSREQ_LAYOUT` overrides it here exactly as it does in the TUI.
 pub fn run_snapshot(me: String) {
-    let mut app = App::new_read_only(me);
+    let mut app = App::new_read_only(me, SNAPSHOT_W);
     while app.is_loading() {
         app.poll_pending();
         std::thread::sleep(Duration::from_millis(50));
     }
-    let backend = ratatui::backend::TestBackend::new(118, 46);
+    let backend = ratatui::backend::TestBackend::new(SNAPSHOT_W, SNAPSHOT_H);
     let mut term = ratatui::Terminal::new(backend).unwrap();
     term.draw(|f| ui(f, &mut app)).unwrap();
     println!("{}", term.backend());
@@ -400,10 +420,22 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
 
                     match k.code {
                         KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                        KeyCode::Down | KeyCode::Char('j') => app.step(1),
-                        KeyCode::Up | KeyCode::Char('k') => app.step(-1),
+                        // Two axes, not one (the messreq-2lx follow-up):
+                        // ↑/↓ move a row and ←/→ move inside it, which in
+                        // `columns`/`tiles` are different cards. `list` puts
+                        // one card on a row, so ↑/↓ there are the step they
+                        // always were and ←/→ have nowhere to go. Every edge
+                        // is decided in `layout::navigate`.
+                        KeyCode::Down | KeyCode::Char('j') => app.move_sel(Direction::Down),
+                        KeyCode::Up | KeyCode::Char('k') => app.move_sel(Direction::Up),
+                        KeyCode::Left | KeyCode::Char('h') => app.move_sel(Direction::Left),
+                        KeyCode::Right | KeyCode::Char('l') => app.move_sel(Direction::Right),
                         KeyCode::Char('r') => app.start_reload(),
                         KeyCode::Char('d') => app.toggle_drafts(),
+                        // `v` for "view" — the only mnemonic letter still
+                        // free in this table (d/m/o/p/q/r/x are taken here,
+                        // and j/k/n/y in the popups above).
+                        KeyCode::Char('v') => app.cycle_layout(),
                         KeyCode::Char('m') => app.mark_all_seen(),
                         KeyCode::Char('o') => {
                             if let Some(i) = app.selected_item() {
@@ -540,6 +572,8 @@ mod tests {
             mine_count: 2,
             sel: 0,
             top: 0,
+            per_row: 1,
+            layout: layout::CardLayout::List,
             show_drafts: false,
             last_load: Instant::now(),
             me: "me".to_string(),

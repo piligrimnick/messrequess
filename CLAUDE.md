@@ -51,7 +51,7 @@ The logic lives in a library crate; `src/main.rs` is a thin binary that parses a
 | `terminal/` | the `TerminalBackend` trait (`mod.rs`) — open a session running a command, list the sessions that have an agent running in them, send a line, focus — with `iterm2.rs` and `tmux.rs` as its two implementations, `detect.rs` choosing between them, and `agent.rs` holding the shared "is an agent running here" rule (messreq-e5t.8) |
 | `error.rs` | `WorkError`, the error type of the "open a Claude session" path (`work_dir_for_mr`, `start_work`, `resume_work`, `TerminalBackend::open`), so a caller can branch on the situation instead of matching strings |
 | `migrate.rs` | transitional shim: carries `~/.local/state/mrdash/` and `~/.config/mrdash/` forward to their `messreq` names on first startup after the rename (messreq-c9j); deletable once every machine has picked it up |
-| `ui/` | `App` state (`app.rs`), cards (`card.rs`), the frame (`screen.rs`), popups (`popup.rs`), the prompt-mode menu (`menu.rs`), run modes and event loop (`mod.rs`) |
+| `ui/` | `App` state (`app.rs`), cards and tiles (`card.rs`), how the cards are arranged (`layout.rs` — the width rule, the packing into rows, the row-to-rect split, all pure), the frame (`screen.rs`), popups (`popup.rs`), the prompt-mode menu (`menu.rs`), run modes and event loop (`mod.rs`) |
 | `notify.rs` | fingerprints, diffing between passes, delivery |
 | `time.rs` | `parse_iso8601`, `rel_age`, `age_days` |
 
@@ -140,13 +140,15 @@ stable — raise `channel` when all four gates still pass on it.
 
 You can build while the TUI is running — cargo writes a new file and swaps it in, and the running process keeps living on the old inode (and therefore on the old code, until you restart it).
 
-`cargo test` runs 254 unit tests plus 8 that are `#[ignore]`d because they drive a real tmux server or a live iTerm2 (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff and the pass around it (both safeguards, plus the snapshot read/write sequence), the blank-session system context and the `--append-system-prompt` argument it rides in (messreq-a7n), terminal backends (including automatic backend detection, the `MESSREQ_TERMINAL` override, the tmux pane-vs-window placement decision — see `terminal::tmux`, messreq-e5t.7 — and the "is an agent running in this session" rule with its `ps` parsing, `terminal::agent`, messreq-e5t.8), and building and escaping the tab command. Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
+`cargo test` runs 328 unit tests plus 8 that are `#[ignore]`d because they drive a real tmux server or a live iTerm2 (run them with `cargo test -- --ignored`). Covered: the "whose turn is it" rule and its precedence, time parsing, prompt templates and their engine, config parsing and path resolution, GitLab host resolution, the notification diff and the pass around it (both safeguards, plus the snapshot read/write sequence), the blank-session system context and the `--append-system-prompt` argument it rides in (messreq-a7n), terminal backends (including automatic backend detection, the `MESSREQ_TERMINAL` override, the tmux pane-vs-window placement decision — see `terminal::tmux`, messreq-e5t.7 — and the "is an agent running in this session" rule with its `ps` parsing, `terminal::agent`, messreq-e5t.8), building and escaping the tab command, and the three card layouts (the width rule, the packing of cards into rows, the click hit test, where the four direction keys move the selection, and each layout drawn through `TestBackend` — `ui::layout`, `ui::screen`, messreq-2lx). Each `tests` module sits next to the code it covers. Anything that shells out to glab or it2 is not covered by tests — check it through the auxiliary CLI modes:
 
 ```bash
 messreq                    # TUI
 messreq --plain            # (= --once) a single textual dump of the MR list
 messreq --snapshot         # one TUI frame rendered to text via TestBackend
-                           # (118×46) — check the layout without a real terminal;
+                           # (118×46, so the width rule starts it in `columns`
+                           # unless MESSREQ_LAYOUT/`layout` say otherwise) —
+                           # check the layout without a real terminal;
                            # read-only — never marks MRs seen or prunes
                            # worktabs/seen state (messreq-9b5.2)
 messreq --prompt <iid>     # print the prompt (Surface mode) that would go to Claude
@@ -157,6 +159,9 @@ MESSREQ_DEBUG=1 messreq …  # diagnostics for failed glab calls + `glab auth st
 MESSREQ_TERMINAL=tmux messreq …  # force the terminal backend for this run instead of
                                   # editing "terminal" in config.json and reverting it —
                                   # see `config::resolve_terminal_backend_with` (messreq-e5t.6)
+MESSREQ_LAYOUT=tiles messreq …    # force the card arrangement (list/columns/tiles) for this
+                                  # run instead of the "layout" key or the width rule — see
+                                  # `config::resolve_layout_with` and `ui::layout` (messreq-2lx)
 MESSREQ_OPEN_MODE=window messreq …  # tmux only: force new-window instead of the default
                                      # pane split for this run — see `config::resolve_open_mode_with`
                                      # and `terminal::tmux` (messreq-e5t.7)

@@ -12,7 +12,8 @@
 //!   "terminal": "tmux",
 //!   "open_mode": "pane",
 //!   "pane_width": 50,
-//!   "mouse": false
+//!   "mouse": false,
+//!   "layout": "columns"
 //! }
 //! ```
 //!
@@ -76,6 +77,19 @@
 //! error — same reasoning as `pane_width`: there is no fixed vocabulary to
 //! typo, so it is treated as unset rather than rejected.
 //!
+//! `layout` (messreq-2lx) is the arrangement the dashboard starts in:
+//! `"list"` (one card per row), `"columns"` (two) or `"tiles"` (taller cards,
+//! as many per row as the width fits). Same precedence shape as
+//! `terminal`/`open_mode`: `MESSREQ_LAYOUT` wins over the `"layout"` key,
+//! which wins over the default — and the default here is the terminal's own
+//! width (under 100 columns `list`, from 100 `columns`, from 160 `tiles`),
+//! since the one thing a starting layout should follow is the size of the
+//! window it is drawn in. An unrecognized value is an error naming it, not a
+//! silent fallback, for the same reason it is for `terminal`/`open_mode`.
+//! The `v` key cycles the layouts for the rest of the session; that is
+//! deliberately not written back to this file, so the key stays a look at
+//! something rather than a change to the configuration.
+//!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
 //! is flat, so it maps onto JSON one to one.
@@ -86,6 +100,7 @@ use std::path::PathBuf;
 use crate::error::{TerminalValueSource, WorkError};
 use crate::model::MergeRequest;
 use crate::terminal::{detect_backend, BackendSource, OpenMode, TerminalBackendName};
+use crate::ui::layout::CardLayout;
 
 /// Default `pane_width` when the config key is absent — the layout the owner
 /// verified against a real tmux (messreq-e5t.7's notes): the dashboard keeps
@@ -117,6 +132,9 @@ struct Config {
     /// `None` (falls through to the default) rather than being kept around
     /// to report back as a typo.
     mouse: Option<bool>,
+    /// Raw `"layout"` value, validated later by `card_layout` — same reason
+    /// as `terminal`/`open_mode` above.
+    layout: Option<String>,
 }
 
 fn home_dir() -> String {
@@ -189,6 +207,11 @@ impl Config {
                 ) as u8
             }),
             mouse: v.get("mouse").and_then(|b| b.as_bool()),
+            layout: v
+                .get("layout")
+                .and_then(|s| s.as_str())
+                .filter(|s| !s.trim().is_empty())
+                .map(String::from),
         }
     }
 
@@ -395,6 +418,55 @@ fn parse_bool(v: &str) -> Option<bool> {
         "1" | "true" | "yes" | "on" => Some(true),
         "0" | "false" | "no" | "off" => Some(false),
         _ => None,
+    }
+}
+
+/// How the dashboard arranges the cards when it starts (messreq-2lx), from
+/// `MESSREQ_LAYOUT` / the `"layout"` key / `terminal_width`. The `v` key
+/// takes over from here for the rest of the session — nothing writes back.
+pub(crate) fn card_layout(terminal_width: u16) -> Result<CardLayout, WorkError> {
+    resolve_layout_with(
+        env_layout().as_deref(),
+        Config::load().layout.as_deref(),
+        terminal_width,
+    )
+}
+
+/// `MESSREQ_LAYOUT`, trimmed; blank counts as unset, mirroring
+/// `env_terminal`.
+fn env_layout() -> Option<String> {
+    nonempty(std::env::var("MESSREQ_LAYOUT").ok())
+}
+
+fn unknown_layout(value: &str, source: TerminalValueSource) -> WorkError {
+    WorkError::UnknownConfigValue {
+        key: "layout",
+        env_var: "MESSREQ_LAYOUT",
+        valid: "\"list\", \"columns\" or \"tiles\"",
+        fallback: "pick one from the terminal width",
+        value: value.to_string(),
+        source,
+        config_path: config_path(),
+    }
+}
+
+/// Same shape as `resolve_open_mode_with`, with the width rule standing in
+/// for its constant default: unlike "pane", the right layout for a terminal
+/// nobody configured depends on how wide that terminal is
+/// (`CardLayout::for_width`, pure and tested in `ui::layout`).
+fn resolve_layout_with(
+    env_value: Option<&str>,
+    config_value: Option<&str>,
+    terminal_width: u16,
+) -> Result<CardLayout, WorkError> {
+    if let Some(v) = env_value {
+        return CardLayout::parse(v).ok_or_else(|| unknown_layout(v, TerminalValueSource::Env));
+    }
+    match config_value {
+        Some(v) => {
+            CardLayout::parse(v).ok_or_else(|| unknown_layout(v, TerminalValueSource::Config))
+        }
+        None => Ok(CardLayout::for_width(terminal_width)),
     }
 }
 
@@ -679,6 +751,103 @@ mod tests {
                 assert_eq!(key, "open_mode");
                 assert_eq!(value, "split");
                 assert!(matches!(source, TerminalValueSource::Config));
+            }
+            other => panic!("expected UnknownConfigValue, got {other:?}"),
+        }
+    }
+
+    // messreq-2lx: the `"layout"` key and MESSREQ_LAYOUT, with the same
+    // precedence as `terminal`/`open_mode` — except that the last step is
+    // the terminal width rather than a constant.
+
+    #[test]
+    fn config_parses_the_layout_key() {
+        assert_eq!(
+            Config::parse(r#"{"layout": "tiles"}"#).layout.as_deref(),
+            Some("tiles")
+        );
+    }
+
+    #[test]
+    fn no_layout_key_is_none_not_a_blank_string() {
+        assert_eq!(Config::parse(CFG).layout, None);
+        assert_eq!(Config::parse(r#"{"layout": "  "}"#).layout, None);
+    }
+
+    #[test]
+    fn missing_layout_falls_through_to_the_width_rule() {
+        assert_eq!(
+            resolve_layout_with(None, None, 80).unwrap(),
+            CardLayout::List
+        );
+        assert_eq!(
+            resolve_layout_with(None, None, 120).unwrap(),
+            CardLayout::Columns
+        );
+        assert_eq!(
+            resolve_layout_with(None, None, 200).unwrap(),
+            CardLayout::Tiles
+        );
+    }
+
+    #[test]
+    fn configured_layout_wins_over_the_width_rule() {
+        // A 200-column terminal would start in tiles on its own; the key
+        // says list, so it is list.
+        assert_eq!(
+            resolve_layout_with(None, Some("list"), 200).unwrap(),
+            CardLayout::List
+        );
+    }
+
+    #[test]
+    fn env_layout_wins_over_the_config_key_and_the_width_rule() {
+        assert_eq!(
+            resolve_layout_with(Some("tiles"), Some("list"), 40).unwrap(),
+            CardLayout::Tiles
+        );
+    }
+
+    #[test]
+    fn env_layout_is_case_insensitive_like_the_config_key() {
+        assert_eq!(
+            resolve_layout_with(Some("TILES"), None, 40).unwrap(),
+            CardLayout::Tiles
+        );
+    }
+
+    #[test]
+    fn unknown_configured_layout_is_an_explicit_error_naming_it() {
+        let err = resolve_layout_with(None, Some("grid"), 120).unwrap_err();
+        match err {
+            WorkError::UnknownConfigValue {
+                key, value, source, ..
+            } => {
+                assert_eq!(key, "layout");
+                assert_eq!(value, "grid");
+                assert!(matches!(source, TerminalValueSource::Config));
+            }
+            other => panic!("expected UnknownConfigValue, got {other:?}"),
+        }
+        // The message the user actually sees names the bad value, where it
+        // came from, and what the valid ones are.
+        let text = resolve_layout_with(None, Some("grid"), 120)
+            .unwrap_err()
+            .to_string();
+        assert!(text.contains("grid"), "{text}");
+        assert!(text.contains("\"tiles\""), "{text}");
+    }
+
+    #[test]
+    fn unknown_env_layout_is_an_explicit_error_not_a_silent_fallback() {
+        let err = resolve_layout_with(Some("grid"), Some("list"), 120).unwrap_err();
+        match err {
+            WorkError::UnknownConfigValue {
+                key, value, source, ..
+            } => {
+                assert_eq!(key, "layout");
+                assert_eq!(value, "grid");
+                assert!(matches!(source, TerminalValueSource::Env));
             }
             other => panic!("expected UnknownConfigValue, got {other:?}"),
         }

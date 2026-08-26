@@ -215,6 +215,8 @@ mod tests {
             mine_count: 0,
             sel: 0,
             top: 0,
+            per_row: 1,
+            layout: crate::ui::layout::CardLayout::List,
             show_drafts: false,
             last_load: Instant::now(),
             me: "me".to_string(),

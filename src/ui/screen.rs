@@ -8,7 +8,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 
 use super::app::App;
-use super::card::render_card;
+use super::card::{render_card, render_tile};
+use super::layout::{card_cells, pack_rows, row_of, CardLayout, Row, Section, GAP_Y};
 use super::popup::{render_confirm, render_menu, render_notice};
 use super::{REFRESH_SECS, SPIN};
 
@@ -131,7 +132,7 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
         };
         f.render_widget(loader, mid);
         let footer = Line::from(vec![Span::styled(
-            " ↑↓ select   ↵ Claude: open/focus/resume   o URL   x forget work   d drafts   r refresh   q quit ",
+            " ↑↓←→ select   ↵ Claude: open/focus/resume   o URL   x forget work   d drafts   r refresh   q quit ",
             Style::default().fg(Color::Black).bg(Color::Gray),
         )]);
         f.render_widget(Paragraph::new(footer), chunks[4]);
@@ -139,90 +140,105 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // ── scrollable card blocks ──
-    enum Unit {
-        Header(String),
-        Card(usize), // index into app.order
-    }
-    const CARD_H: u16 = 4; // top/bottom border + 2 lines of content
-    const GAP: u16 = 1; // air between the cards
-
-    let rev_count = app.order.len() - app.mine_count;
-    let mut units: Vec<(Unit, u16)> =
-        vec![(Unit::Header(format!("MY MRs ({})", app.mine_count)), 1)];
-    for oi in 0..app.mine_count {
-        units.push((Unit::Card(oi), CARD_H));
-    }
-    units.push((Unit::Header(format!("REVIEWING ({rev_count})")), 1));
-    for oi in app.mine_count..app.order.len() {
-        units.push((Unit::Card(oi), CARD_H));
-    }
-
+    //
+    // The list is a stack of rows, not a stack of cards (messreq-2lx): in
+    // `columns` and `tiles` one row holds several cards side by side, so
+    // `app.top` — the first visible row — has to be a row index. Which cards
+    // share a row is decided by `layout::pack_rows`, which is pure and
+    // tested on its own; everything below only draws what it returns.
     let area = chunks[2];
-    let sel_unit = units
-        .iter()
-        .position(|(u, _)| matches!(u, Unit::Card(oi) if *oi == app.sel))
-        .unwrap_or(0);
+    let per_row = app.layout.cards_per_row(area.width);
+    // Recorded for the key handler: ←/→/↑/↓ need the same row packing, and
+    // the width the count follows from is known only here (see
+    // `App::per_row` and `App::move_sel`).
+    app.per_row = per_row;
+    let rows = pack_rows(app.mine_count, app.order.len(), per_row);
+    let rev_count = app.order.len() - app.mine_count;
 
-    // Scrolling: keep the selected card visible, aligning the top to a unit boundary.
-    if sel_unit < app.top {
-        app.top = sel_unit;
+    let sel_row = row_of(&rows, app.sel);
+
+    // Scrolling: keep the row holding the selected card visible, aligning
+    // the top of the viewport to a row boundary.
+    if sel_row < app.top {
+        app.top = sel_row;
     }
     loop {
         let mut h = 0u16;
-        for (i, (_, unit_h)) in units.iter().enumerate().take(sel_unit + 1).skip(app.top) {
-            h = h.saturating_add(*unit_h);
-            if i < sel_unit {
-                h = h.saturating_add(GAP);
+        for (i, row) in rows.iter().enumerate().take(sel_row + 1).skip(app.top) {
+            h = h.saturating_add(row.height(app.layout));
+            if i < sel_row {
+                h = h.saturating_add(GAP_Y);
             }
         }
-        if h <= area.height || app.top >= sel_unit {
+        if h <= area.height || app.top >= sel_row {
             break;
         }
         app.top += 1;
     }
 
     let mut y = area.y;
-    for (unit, h) in units.iter().skip(app.top) {
+    for row in rows.iter().skip(app.top) {
         if y >= area.y + area.height {
             break;
         }
-        let draw_h = (*h).min(area.y + area.height - y);
+        let h = row.height(app.layout);
+        let draw_h = h.min(area.y + area.height - y);
         let rect = ratatui::layout::Rect {
             x: area.x,
             y,
             width: area.width,
             height: draw_h,
         };
-        match unit {
-            Unit::Header(t) => f.render_widget(
-                Paragraph::new(Line::from(Span::styled(
-                    t.clone(),
-                    Style::default()
-                        .fg(Color::Rgb(150, 150, 190))
-                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                ))),
-                rect,
-            ),
-            Unit::Card(oi) => {
-                app.card_rects.push((*oi, rect));
-                let mr = &app.items[app.order[*oi]];
-                render_card(
-                    f,
+        match row {
+            Row::Header(section) => {
+                let title = match section {
+                    Section::Mine => format!("MY MRs ({})", app.mine_count),
+                    Section::Reviewing => format!("REVIEWING ({rev_count})"),
+                };
+                f.render_widget(
+                    Paragraph::new(Line::from(Span::styled(
+                        title,
+                        Style::default()
+                            .fg(Color::Rgb(150, 150, 190))
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    ))),
                     rect,
-                    mr,
-                    app.work_status(mr),
-                    *oi == app.sel,
-                    app.is_new(mr),
-                );
+                )
+            }
+            Row::Cards(indices) => {
+                // Always split into `per_row` cells, even on a short last
+                // row — the cards stay aligned with the row above instead of
+                // stretching to fill it.
+                let cells = card_cells(rect, per_row);
+                for (oi, cell) in indices.iter().zip(cells) {
+                    app.card_rects.push((*oi, cell));
+                    let mr = &app.items[app.order[*oi]];
+                    let draw = match app.layout {
+                        CardLayout::Tiles => render_tile,
+                        CardLayout::List | CardLayout::Columns => render_card,
+                    };
+                    draw(
+                        f,
+                        cell,
+                        mr,
+                        app.work_status(mr),
+                        *oi == app.sel,
+                        app.is_new(mr),
+                    );
+                }
             }
         }
-        y = y.saturating_add(*h).saturating_add(GAP);
+        y = y.saturating_add(h).saturating_add(GAP_Y);
     }
 
+    // `v` names the layout it switches to next, not the one on screen: the
+    // current one is what the user is looking at, and the hint is worth more
+    // as an answer to "what happens if I press this".
+    let next_layout = app.layout.next().as_str();
     let footer_text = if app.mouse_enabled {
-        " ↑↓/🖱 select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  r refresh  q quit "
+        format!(" ↑↓←→/🖱 select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  v {next_layout}  r refresh  q quit ")
     } else {
-        " ↑↓ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  r refresh  q quit "
+        format!(" ↑↓←→ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  v {next_layout}  r refresh  q quit ")
     };
     let footer = Line::from(vec![Span::styled(
         footer_text,
@@ -235,11 +251,17 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     render_notice(f, app);
 }
 
-/// Which card (an index into `App::order`, the same unit `Unit::Card` above
-/// carries) a click at `(x, y)` landed on, if any. Pure arithmetic over the
-/// rects `ui()` recorded for the frame just drawn (`App::card_rects`) — no
-/// dependency on a live terminal, so it is tested directly rather than
-/// through a rendered frame.
+/// Which card (an index into `App::order`, the same numbering `Row::Cards`
+/// above carries) a click at `(x, y)` landed on, if any. Pure arithmetic
+/// over the rects `ui()` recorded for the frame just drawn
+/// (`App::card_rects`) — no dependency on a live terminal, so it is tested
+/// directly rather than through a rendered frame.
+///
+/// Layout-agnostic on purpose (messreq-2lx): a card no longer spans the full
+/// width, and this never assumed it did — the rects come from
+/// `layout::card_cells`, so a narrow card in the right-hand column is hit
+/// exactly like a full-width one, and the blank columns between two cards
+/// are a miss for the same reason the blank row between them is.
 ///
 /// A section header, the gap between cards, a point below the last visible
 /// card, or anything scrolled out of view all fall out for free: none of
@@ -315,6 +337,63 @@ mod hit_test_tests {
         assert_eq!(hit_test(&rects, 5, 8), Some(6));
     }
 
+    /// Two cards side by side, as `columns` lays them out: the row is split
+    /// by `layout::card_cells`, so each card is half the width and the
+    /// `GAP_X` columns between them belong to neither.
+    fn two_columns() -> Vec<(usize, Rect)> {
+        vec![
+            (0, Rect::new(0, 2, 20, 4)),
+            (1, Rect::new(22, 2, 20, 4)),
+            (2, Rect::new(0, 7, 20, 4)),
+            (3, Rect::new(22, 7, 20, 4)),
+        ]
+    }
+
+    #[test]
+    fn click_in_the_right_hand_column_selects_that_card_not_its_neighbor() {
+        // messreq-2lx: a card no longer spans the full width, so the column
+        // a click lands in decides which card it is — the same row now holds
+        // two different answers.
+        let rects = two_columns();
+        assert_eq!(hit_test(&rects, 5, 3), Some(0));
+        assert_eq!(hit_test(&rects, 25, 3), Some(1));
+        assert_eq!(hit_test(&rects, 5, 8), Some(2));
+        assert_eq!(hit_test(&rects, 25, 8), Some(3));
+    }
+
+    #[test]
+    fn click_in_the_gap_between_two_columns_selects_nothing() {
+        // Columns 20 and 21 are the GAP_X strip between the two cards —
+        // inside the row, but inside neither card.
+        let rects = two_columns();
+        assert_eq!(hit_test(&rects, 20, 3), None);
+        assert_eq!(hit_test(&rects, 21, 3), None);
+    }
+
+    #[test]
+    fn click_past_the_last_column_of_a_short_row_selects_nothing() {
+        // The last row of a section can hold fewer cards than the layout has
+        // columns; the empty cell gets no rect, so clicking it is a miss
+        // rather than selecting the card to its left.
+        let rects = vec![
+            (0, Rect::new(0, 2, 20, 4)),
+            (1, Rect::new(22, 2, 20, 4)),
+            (2, Rect::new(0, 7, 20, 4)),
+        ];
+        assert_eq!(hit_test(&rects, 25, 8), None);
+    }
+
+    #[test]
+    fn click_inside_a_tile_selects_it_over_its_whole_height() {
+        // A tile is TILE_H rows tall, not CARD_H — a click on its last line
+        // (the thread line) is still a click on the tile.
+        let rects = vec![(0, Rect::new(0, 2, 40, 7)), (1, Rect::new(42, 2, 40, 7))];
+        assert_eq!(hit_test(&rects, 5, 2), Some(0));
+        assert_eq!(hit_test(&rects, 5, 8), Some(0));
+        assert_eq!(hit_test(&rects, 5, 9), None); // one row past the tile
+        assert_eq!(hit_test(&rects, 45, 8), Some(1));
+    }
+
     #[test]
     fn empty_card_rects_selects_nothing() {
         assert_eq!(hit_test(&[], 5, 5), None);
@@ -324,5 +403,329 @@ mod hit_test_tests {
     fn out_of_bounds_click_selects_nothing() {
         let rects = three_cards();
         assert_eq!(hit_test(&rects, 1000, 1000), None);
+    }
+}
+
+/// The three layouts as actually drawn (messreq-2lx). Unlike the `hit_test`
+/// tests above, which feed in rects by hand, these render a real frame
+/// through `ratatui`'s `TestBackend` and assert on what `ui()` recorded and
+/// printed — the packing, the scrolling, the rects handed to `hit_test`, and
+/// the extra lines a tile carries all go through the same path the TUI uses.
+#[cfg(test)]
+mod render_tests {
+    use std::collections::HashSet;
+    use std::time::Instant;
+
+    use ratatui::layout::Rect;
+
+    use super::super::app::App;
+    use super::super::layout::CardLayout;
+    use super::{hit_test, ui};
+    use crate::model::{CiStatus, ForgeId, MergeRequest, Mergeable, ReviewState, Sev, Thread};
+
+    fn mr(iid: u64, mine: bool) -> MergeRequest {
+        MergeRequest {
+            id: ForgeId::GitLab { project_id: 1, iid },
+            path: "acme/backend".into(),
+            url: format!("https://example.com/mr/{iid}"),
+            title: format!("Fix the thing {iid}"),
+            author: "alice".into(),
+            draft: false,
+            conflicts: false,
+            merge_status: Mergeable::Ready,
+            pipeline: CiStatus::Success,
+            approved_by: vec![],
+            reviewers: vec!["alice".into(), "bob".into()],
+            unresolved: vec![
+                Thread {
+                    id: "d1".into(),
+                    author: "alice".into(),
+                    last_author: "alice".into(),
+                    notes: 1,
+                    body: "please rename this".into(),
+                    mine: false,
+                },
+                Thread {
+                    id: "d2".into(),
+                    author: "bob".into(),
+                    last_author: "bob".into(),
+                    notes: 1,
+                    body: "why is this here".into(),
+                    mine: false,
+                },
+            ],
+            mine,
+            queue: None,
+            my_review: ReviewState::None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            action_label: "your turn".into(),
+            action_sev: Sev::Action,
+        }
+    }
+
+    /// `mine` own MRs followed by `reviewing` others', already ordered the
+    /// way `rebuild_order` would leave them, in the given layout.
+    fn app(mine: usize, reviewing: usize, layout: CardLayout) -> App {
+        let items: Vec<MergeRequest> = (0..mine)
+            .map(|i| mr(i as u64 + 1, true))
+            .chain((0..reviewing).map(|i| mr(100 + i as u64, false)))
+            .collect();
+        App {
+            order: (0..items.len()).collect(),
+            items,
+            mine_count: mine,
+            sel: 0,
+            top: 0,
+            per_row: 1,
+            layout,
+            show_drafts: false,
+            last_load: Instant::now(),
+            me: "me".to_string(),
+            work: serde_json::Map::new(),
+            seen: serde_json::Map::new(),
+            agent_sessions: HashSet::new(),
+            pending: None,
+            spinner: 0,
+            menu: None,
+            confirm: None,
+            notice: None,
+            kbd_enhanced: false,
+            mouse_enabled: false,
+            card_rects: vec![],
+            read_only: false,
+        }
+    }
+
+    /// Draw one frame at `w` x `h` and give back what it printed. `App` is
+    /// left holding the `card_rects` of that frame, exactly as the live TUI
+    /// leaves it for the next click.
+    fn render(app: &mut App, w: u16, h: u16) -> String {
+        let backend = ratatui::backend::TestBackend::new(w, h);
+        let mut term = ratatui::Terminal::new(backend).unwrap();
+        term.draw(|f| ui(f, app)).unwrap();
+        format!("{}", term.backend())
+    }
+
+    /// The rect a card was drawn in, by its index into `order`.
+    fn rect_of(app: &App, order_index: usize) -> Option<Rect> {
+        app.card_rects
+            .iter()
+            .find(|(oi, _)| *oi == order_index)
+            .map(|(_, r)| *r)
+    }
+
+    #[test]
+    fn list_draws_one_full_width_card_per_row() {
+        let mut app = app(3, 0, CardLayout::List);
+        render(&mut app, 118, 46);
+
+        assert_eq!(app.card_rects.len(), 3);
+        let first = rect_of(&app, 0).unwrap();
+        for oi in 1..3 {
+            let r = rect_of(&app, oi).unwrap();
+            assert_eq!(r.x, first.x, "card {oi} is not in the same column");
+            assert_eq!(r.width, first.width, "card {oi} is not full width");
+            // CARD_H + GAP_Y between one card and the next.
+            assert_eq!(r.y, first.y + 5 * oi as u16);
+            assert_eq!(r.height, 4);
+        }
+    }
+
+    #[test]
+    fn columns_puts_two_cards_on_one_row_and_starts_a_new_row_for_the_third() {
+        let mut app = app(3, 0, CardLayout::Columns);
+        render(&mut app, 118, 46);
+
+        let a = rect_of(&app, 0).unwrap();
+        let b = rect_of(&app, 1).unwrap();
+        let c = rect_of(&app, 2).unwrap();
+
+        assert_eq!(a.y, b.y, "the first two cards should share a row");
+        assert!(a.x < b.x, "card 1 should be to the right of card 0");
+        assert!(a.x + a.width < b.x, "the two cards should not touch");
+        assert!(a.width < 118 / 2, "a column should be about half the width");
+        assert_eq!(c.y, a.y + 5, "the third card starts the next row");
+        assert_eq!(c.x, a.x, "and starts it in the left column");
+    }
+
+    #[test]
+    fn columns_keeps_the_sections_stacked_rather_than_side_by_side() {
+        // The decided shape (messreq-2lx): a full-width MY MRs heading, its
+        // cards flowing into two columns, then a full-width REVIEWING
+        // heading and its cards — not one section per column.
+        let mut app = app(2, 2, CardLayout::Columns);
+        let text = render(&mut app, 118, 46);
+
+        assert!(text.contains("MY MRs (2)"), "{text}");
+        assert!(text.contains("REVIEWING (2)"), "{text}");
+
+        let mine_row = rect_of(&app, 0).unwrap();
+        assert_eq!(rect_of(&app, 1).unwrap().y, mine_row.y);
+        let rev_row = rect_of(&app, 2).unwrap();
+        assert_eq!(rect_of(&app, 3).unwrap().y, rev_row.y);
+        // The reviewing row is below the mine row, with the heading between
+        // them — never beside it.
+        assert!(rev_row.y > mine_row.y + mine_row.height);
+    }
+
+    #[test]
+    fn tiles_are_taller_and_carry_the_project_reviewers_and_newest_thread() {
+        let mut app = app(2, 0, CardLayout::Tiles);
+        let text = render(&mut app, 180, 46);
+
+        let first = rect_of(&app, 0).unwrap();
+        assert_eq!(first.height, 7);
+        assert_eq!(
+            rect_of(&app, 1).unwrap().y,
+            first.y,
+            "180 columns fit 3 tiles per row"
+        );
+
+        assert!(text.contains("acme/backend"), "no project path:\n{text}");
+        assert!(text.contains("alice, bob"), "no reviewers:\n{text}");
+        // The newest unresolved thread, with its author — the second one.
+        assert!(
+            text.contains("bob: why is this here"),
+            "no thread line:\n{text}"
+        );
+    }
+
+    #[test]
+    fn tiles_fall_back_to_one_per_row_on_a_narrow_terminal() {
+        // The layout is what the user asked for; only the count scales.
+        let mut app = app(2, 0, CardLayout::Tiles);
+        render(&mut app, 70, 46);
+
+        let a = rect_of(&app, 0).unwrap();
+        let b = rect_of(&app, 1).unwrap();
+        assert_eq!(b.y, a.y + 8, "TILE_H + GAP_Y below the first tile");
+        assert_eq!(b.x, a.x);
+    }
+
+    #[test]
+    fn a_click_lands_on_the_card_under_it_in_every_layout() {
+        // The end-to-end version of the `hit_test` unit tests above: the
+        // rects come from a real frame, not from a hand-written list.
+        for layout in [CardLayout::List, CardLayout::Columns, CardLayout::Tiles] {
+            let mut app = app(4, 0, layout);
+            render(&mut app, 180, 46);
+            for oi in 0..4 {
+                let r = rect_of(&app, oi).unwrap();
+                let (x, y) = (r.x + r.width / 2, r.y + r.height / 2);
+                assert_eq!(
+                    hit_test(&app.card_rects, x, y),
+                    Some(oi),
+                    "{layout:?}: click at ({x}, {y}) missed card {oi}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_selected_mr_stays_selected_and_visible_across_a_layout_switch() {
+        let mut app = app(6, 0, CardLayout::List);
+        app.sel = 5;
+        render(&mut app, 180, 46);
+        let selected_before = app.selected_item();
+        assert!(rect_of(&app, 5).is_some());
+
+        app.cycle_layout(); // columns
+        render(&mut app, 180, 46);
+        assert_eq!(app.sel, 5);
+        assert_eq!(app.selected_item(), selected_before);
+        assert!(
+            rect_of(&app, 5).is_some(),
+            "the selected card is off screen"
+        );
+
+        app.cycle_layout(); // tiles
+        render(&mut app, 180, 46);
+        assert_eq!(app.sel, 5);
+        assert_eq!(app.selected_item(), selected_before);
+        assert!(
+            rect_of(&app, 5).is_some(),
+            "the selected card is off screen"
+        );
+    }
+
+    #[test]
+    fn scrolling_by_rows_keeps_the_selected_card_on_screen() {
+        // A terminal too short for the whole list: `app.top` is a row index
+        // now, so a selection far down scrolls whole rows into view — and
+        // the rows it scrolled past are not in `card_rects`, so a click
+        // cannot hit them.
+        let mut app = app(12, 0, CardLayout::Columns);
+        app.sel = 11;
+        render(&mut app, 118, 20);
+
+        assert!(app.top > 0, "the list should have scrolled");
+        assert!(
+            rect_of(&app, 11).is_some(),
+            "the selected card is off screen"
+        );
+        assert!(
+            rect_of(&app, 0).is_none(),
+            "the first card should be scrolled out"
+        );
+    }
+
+    #[test]
+    fn scrolling_back_up_brings_the_first_card_on_screen_again() {
+        let mut app = app(12, 0, CardLayout::Columns);
+        app.sel = 11;
+        render(&mut app, 118, 20);
+        assert!(app.top > 0);
+
+        app.sel = 0;
+        render(&mut app, 118, 20);
+
+        // Row 1: the first row of cards. The viewport is pulled up to the
+        // row holding the selection, not all the way to 0 — so the "MY MRs"
+        // heading in row 0 stays off screen. That is the behavior the
+        // pre-messreq-2lx code had unit for unit, kept deliberately rather
+        // than changed under cover of this issue.
+        assert_eq!(app.top, 1);
+        assert!(rect_of(&app, 0).is_some());
+        assert!(rect_of(&app, 11).is_none());
+    }
+
+    #[test]
+    fn the_footer_hints_all_four_direction_keys() {
+        // The footer is where the keys are documented on screen, so it has
+        // to name the second axis too — in every layout, including `list`,
+        // where ←/→ are a no-op but ↑/↓ are not.
+        for layout in [CardLayout::List, CardLayout::Columns, CardLayout::Tiles] {
+            let mut app = app(3, 0, layout);
+            let text = render(&mut app, 118, 46);
+            assert!(text.contains("↑↓←→ select"), "{text}");
+        }
+    }
+
+    #[test]
+    fn the_footer_names_the_layout_the_key_switches_to() {
+        let mut app = app(1, 0, CardLayout::List);
+        let text = render(&mut app, 118, 46);
+        assert!(text.contains("v columns"), "{text}");
+
+        app.cycle_layout();
+        let text = render(&mut app, 118, 46);
+        assert!(text.contains("v tiles"), "{text}");
+
+        app.cycle_layout();
+        let text = render(&mut app, 118, 46);
+        assert!(text.contains("v list"), "{text}");
+    }
+
+    #[test]
+    fn an_empty_list_draws_the_loader_in_every_layout() {
+        // The no-data path returns before any packing happens; check it
+        // still does, whatever the layout is set to.
+        for layout in [CardLayout::List, CardLayout::Columns, CardLayout::Tiles] {
+            let mut app = app(0, 0, layout);
+            let text = render(&mut app, 118, 46);
+            assert!(text.contains("no merge requests"), "{layout:?}:\n{text}");
+            assert!(app.card_rects.is_empty());
+        }
     }
 }

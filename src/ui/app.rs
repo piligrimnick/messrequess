@@ -8,6 +8,7 @@ use std::time::Instant;
 use ratatui::layout::Rect;
 use serde_json::json;
 
+use super::layout::{navigate, pack_rows, CardLayout, Direction};
 use super::menu::MenuItem;
 use crate::forge::{Forge, GitlabForge};
 use crate::model::MergeRequest;
@@ -48,7 +49,20 @@ pub(crate) struct App {
     pub(crate) order: Vec<usize>,
     pub(crate) mine_count: usize, // boundary between the sections in order
     pub(crate) sel: usize,        // selected card (index into order)
-    pub(crate) top: usize,        // first visible draw unit (scrolling)
+    // first visible row (scrolling) — a row, not a card: `columns` and
+    // `tiles` put several cards on one row, see `layout::pack_rows`
+    pub(crate) top: usize,
+    // how many cards the frame just drawn put on one row — `screen::ui`
+    // records it there, because the count follows the width left for the
+    // list after the frame's borders and only the drawing code knows that.
+    // `move_sel` packs the same rows back out of it to answer ←/→/↑/↓. It
+    // is 1 until the first frame is drawn, which is also the value that
+    // makes `move_sel` behave like the old `step` — see `CardLayout::List`.
+    pub(crate) per_row: usize,
+    // how the cards are arranged (messreq-2lx): resolved once at startup
+    // from MESSREQ_LAYOUT / the "layout" key / the terminal width, then
+    // cycled by `v` for the rest of the session — never written back
+    pub(crate) layout: CardLayout,
     pub(crate) show_drafts: bool, // whether to show drafts (hidden by default)
     pub(crate) last_load: Instant,
     pub(crate) me: String,
@@ -87,8 +101,11 @@ pub(crate) struct App {
 }
 
 impl App {
-    pub(crate) fn new(me: String) -> App {
-        Self::new_with(me, false)
+    /// `term_width` is the whole terminal's width, used only to pick the
+    /// starting layout when neither `MESSREQ_LAYOUT` nor the `"layout"`
+    /// config key set one — see `config::card_layout`.
+    pub(crate) fn new(me: String, term_width: u16) -> App {
+        Self::new_with(me, false, term_width)
     }
 
     /// Same as `new`, but never writes to `~/.local/state/messreq/` while
@@ -101,17 +118,30 @@ impl App {
     /// including the silent first-run baseline (no MR lights up as new);
     /// only the disk writes (`save_seen`, `save_worktabs`, `prune_prompts`)
     /// are skipped.
-    pub(crate) fn new_read_only(me: String) -> App {
-        Self::new_with(me, true)
+    pub(crate) fn new_read_only(me: String, term_width: u16) -> App {
+        Self::new_with(me, true, term_width)
     }
 
-    fn new_with(me: String, read_only: bool) -> App {
+    fn new_with(me: String, read_only: bool, term_width: u16) -> App {
+        // An unrecognized `"layout"`/`MESSREQ_LAYOUT` value is an error that
+        // names it, like `"terminal"` and `"open_mode"` are — surfaced the
+        // way every other `WorkError` is in the TUI, as the notice popup, so
+        // it is visible on the first frame instead of on the first Enter.
+        // The dashboard still starts, on the layout the width rule picks:
+        // refusing to draw anything because of a typo in a display setting
+        // would be a worse trade than showing the typo and the list.
+        let (layout, notice) = match crate::config::card_layout(term_width) {
+            Ok(layout) => (layout, None),
+            Err(err) => (CardLayout::for_width(term_width), Some(err.to_string())),
+        };
         let mut app = App {
             items: vec![],
             order: vec![],
             mine_count: 0,
             sel: 0,
             top: 0,
+            per_row: 1,
+            layout,
             show_drafts: false,
             last_load: Instant::now(),
             me,
@@ -122,7 +152,7 @@ impl App {
             spinner: 0,
             menu: None,
             confirm: None,
-            notice: None,
+            notice,
             kbd_enhanced: false,
             mouse_enabled: crate::config::mouse_enabled(),
             card_rects: vec![],
@@ -321,6 +351,17 @@ impl App {
         };
     }
 
+    /// Switch to the next layout (the `v` key): list → columns → tiles →
+    /// list. The selection is an index into `order`, which no layout touches,
+    /// so the same MR stays selected — only where it sits on screen changes.
+    /// `top` goes back to 0 for the same reason `toggle_drafts` resets it:
+    /// the rows are all different now, and `screen::ui` scrolls back down to
+    /// the selected card on the very next frame anyway.
+    pub(crate) fn cycle_layout(&mut self) {
+        self.layout = self.layout.next();
+        self.top = 0;
+    }
+
     pub(crate) fn toggle_drafts(&mut self) {
         self.show_drafts = !self.show_drafts;
         self.top = 0;
@@ -348,6 +389,29 @@ impl App {
         self.items.iter().position(|mr| mr_key(mr) == key)
     }
 
+    /// Move the selection one card sideways, or one row up or down, keeping
+    /// the column. The decision itself is `layout::navigate`, which is pure
+    /// and holds the reasoning for every edge (row ends, short rows, section
+    /// boundaries, the wrap); this only rebuilds the rows it needs from the
+    /// card count of the last drawn frame.
+    ///
+    /// The rows are packed again here rather than cached from `screen::ui`
+    /// because `pack_rows` is cheap and `order`/`mine_count` can have been
+    /// replaced by a background reload since that frame — `per_row` is the
+    /// one input that comes from the layout and cannot be recomputed without
+    /// the drawing area.
+    pub(crate) fn move_sel(&mut self, dir: Direction) {
+        if self.order.is_empty() {
+            return;
+        }
+        let rows = pack_rows(self.mine_count, self.order.len(), self.per_row);
+        self.sel = navigate(&rows, self.sel, dir);
+    }
+
+    /// Move the selection by `delta` cards through `order`, wrapping at both
+    /// ends. Still what the mouse wheel does (`ui::handle_mouse`): a wheel is
+    /// a scroll gesture, not a grid move, so it walks the cards in reading
+    /// order whatever the layout puts beside them.
     pub(crate) fn step(&mut self, delta: isize) {
         let n = self.order.len();
         if n == 0 {
@@ -402,6 +466,8 @@ mod tests {
             mine_count: 0,
             sel: 0,
             top: 0,
+            per_row: 1,
+            layout: CardLayout::List,
             show_drafts: false,
             last_load: Instant::now(),
             me: "me".to_string(),
@@ -491,6 +557,78 @@ mod tests {
         assert_eq!(app.order, Vec::<usize>::new());
         assert_eq!(app.sel, 0);
         assert_eq!(app.selected_item(), None);
+    }
+
+    // messreq-2lx: the `v` key changes only how the cards are arranged. The
+    // selection is an index into `order`, which no layout touches, so the
+    // same MR has to stay selected across a switch.
+
+    #[test]
+    fn cycle_layout_walks_the_three_layouts_and_returns_to_the_start() {
+        let mut app = app_with(vec![mr(1, 7)]);
+        assert_eq!(app.layout, CardLayout::List);
+        app.cycle_layout();
+        assert_eq!(app.layout, CardLayout::Columns);
+        app.cycle_layout();
+        assert_eq!(app.layout, CardLayout::Tiles);
+        app.cycle_layout();
+        assert_eq!(app.layout, CardLayout::List);
+    }
+
+    #[test]
+    fn cycle_layout_keeps_the_same_mr_selected() {
+        let mut app = app_with(vec![mr(1, 7), mr(1, 8), mr(1, 9)]);
+        app.rebuild_order();
+        app.sel = 2; // mr 9
+        app.top = 3;
+
+        app.cycle_layout();
+
+        assert_eq!(app.sel, 2);
+        assert_eq!(app.selected_item(), Some(2)); // still mr 9
+                                                  // The rows are all different now, so the viewport starts from the
+                                                  // top and `screen::ui` scrolls back to the selected card.
+        assert_eq!(app.top, 0);
+    }
+
+    // `move_sel` is a two-line wrapper around `layout::navigate` (which owns
+    // every edge and is tested there); what these check is the wiring — that
+    // it packs the rows from the card count the last frame drew, so the same
+    // key press means different things in `list` and `columns`.
+
+    #[test]
+    fn move_sel_follows_the_card_count_of_the_last_drawn_frame() {
+        let mut app = app_with(vec![mr(1, 7), mr(1, 8), mr(1, 9)]);
+        app.rebuild_order(); // all three are mine: order = [0, 1, 2]
+
+        app.per_row = 2; // rows: [0, 1] then [2]
+        app.sel = 0;
+        app.move_sel(Direction::Right);
+        assert_eq!(app.sel, 1);
+        app.move_sel(Direction::Down);
+        assert_eq!(app.sel, 2); // the row below holds one card
+
+        app.per_row = 1; // the same three cards stacked
+        app.sel = 0;
+        app.move_sel(Direction::Right);
+        assert_eq!(app.sel, 0); // nowhere to go sideways
+        app.move_sel(Direction::Down);
+        assert_eq!(app.sel, 1);
+    }
+
+    #[test]
+    fn move_sel_does_nothing_on_an_empty_list() {
+        let mut app = app_with(vec![]);
+        app.rebuild_order();
+        for dir in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            app.move_sel(dir);
+            assert_eq!(app.sel, 0);
+        }
     }
 
     #[test]
