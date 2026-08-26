@@ -55,10 +55,10 @@ This document uses the abbreviation MR for a merge request.
 
 One person wrote this tool, and made it public because other people might find it useful. It is not a product, and it does not operate in all conditions. It needs a specific setup. This section tells you what that setup is.
 
-**The version is 0.1.0, and that number is accurate.** One person uses this tool each day, on one machine. That is the full test. The config keys, the names of the prompt templates, the formats of the state files, and the command-line flags can change with no warning. There is no changelog. The tag `v0.1.0` exists, so you can install that version:
+**The version is 0.2.0, and that number is accurate.** One person uses this tool each day, on one machine. That is the full test. The config keys, the names of the prompt templates, the formats of the state files, and the command-line flags can change with no warning. There is no changelog file; each tag carries its notes on its GitHub release page. Tags exist, so you can install one instead of the moving branch:
 
 ```bash
-cargo install --git https://github.com/piligrimnick/messrequess --tag v0.1.0
+cargo install --git https://github.com/piligrimnick/messrequess --tag v0.2.0
 ```
 
 If you do not give `--tag`, cargo builds the current content of the `main` branch.
