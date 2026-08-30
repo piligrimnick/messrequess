@@ -18,33 +18,33 @@ This document uses the abbreviation MR for a merge request.
 │                                                                                                                    │
 │   ╔ ▶ !418 ═══════════════════════════════════════════════════════════════════════════════════════════ → reply ╗   │
 │   ║ Cache the invoice PDF renderer                                                                             ║   │
-│   ║ ✅ 1 approvals     🟢 success     💬 1 threads     🗓 1w · ✎ 1d     🚄 train #1 · running                   ║   │
+│   ║ ✅ 1 approvals     🟢 success     💬 1 threads     🗓 1w · ✎ 3d     🚄 train #1 · running                   ║   │
 │   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
 │   ╔ !415 ═══════════════════════════════════════════════════════════════════════════════════════════════ CI 🔴 ╗   │
 │   ║ Drop the legacy /v1 billing endpoints                                                                      ║   │
-│   ║ ⚪ 0 approvals     🔴 failed     💬 2 threads     🗓 1w · ✎ 1d                                              ║   │
+│   ║ ⚪ 0 approvals     🔴 failed     💬 2 threads     🗓 1w · ✎ 3d                                              ║   │
 │   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
 │   ╔ !77 ══════════════════════════════════════════════════════════════════════════════════════ awaiting review ╗   │
 │   ║ Move the settings drawer to the new layout                                                                 ║   │
-│   ║ ⚪ 0 approvals     🟠 running     💬 0 threads     🗓 1w · ✎ 1d                                             ║   │
+│   ║ ⚪ 0 approvals     🟠 running     💬 0 threads     🗓 1w · ✎ 3d                                             ║   │
 │   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
 │   REVIEWING (2)                                                                                                    │
 │                                                                                                                    │
 │   ╔ !421 ═════════════════════════════════════════════════════════════════════════════════════════ → your turn ╗   │
 │   ║ Retry webhook delivery with a capped backoff                                                               ║   │
-│   ║ 👤 marco     🟢 success     💬 1 threads     🗓 1w · ✎ 1d                                                   ║   │
+│   ║ 👤 marco     🟢 success     💬 1 threads     🗓 1w · ✎ 3d                                                   ║   │
 │   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
 │   ╔ !79 ══════════════════════════════════════════════════════════════════════════════════════════ ✅ approved ╗   │
 │   ║ Fix the date picker on the annual plan                                                                     ║   │
-│   ║ 👤 priya     🟢 success     💬 0 threads     🗓 1w · ✎ 3d                                                   ║   │
+│   ║ 👤 priya     🟢 success     💬 0 threads     🗓 1w · ✎ 4d                                                   ║   │
 │   ╚════════════════════════════════════════════════════════════════════════════════════════════════════════════╝   │
 │                                                                                                                    │
 │                                                                                                                    │
-│    ↑↓←→ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  v columns  r refresh  q quit               │
+│   ↑↓←→ select  ↵ Claude  ⇧↵/p mode  o URL  ⇧P review  m seen  x forget  d drafts  v columns  r reload  q quit      │
 │                                                                                                                    │
 ╰────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 ```
@@ -82,6 +82,8 @@ The dashboard and the Claude sessions need different programs. So there are two 
 If you do not have the items in the second list, the dashboard operates correctly. The Enter key then opens a popup that names the missing item.
 
 **Optional, and for macOS only:** install `terminal-notifier`. Each notification then contains a link to the MR, and you can click that link. Without `terminal-notifier`, the tool uses `osascript`, which cannot show a link.
+
+**Optional:** install `plannotator`. The `Shift+P` key then opens a review of the selected MR in your browser. Plannotator reads the MR with your authenticated `glab`, so it needs no new account and no new token. The dashboard operates correctly without `plannotator`, and the `Shift+P` key then opens a popup that names the missing program.
 
 **A self-hosted GitLab instance usually needs a VPN.** Without the VPN, `glab` fails. At the start, the tool prints an authentication error and stops. If a refresh fails during operation, the list becomes empty. The tool reads an empty response as a failed request, and not as "all the MRs are closed". So it keeps the last snapshot, and it sends no false "merged" notifications.
 
@@ -182,7 +184,8 @@ The config file is at `$XDG_CONFIG_HOME/messreq/config.json` when `XDG_CONFIG_HO
   "open_mode": "pane",
   "pane_width": 50,
   "mouse": false,
-  "layout": "columns"
+  "layout": "columns",
+  "review_browser": "Google Chrome"
 }
 ```
 
@@ -196,6 +199,7 @@ These are all the keys that the tool reads:
 | `open_mode` | string | `"pane"` | For tmux only. The value `"pane"` divides the window, and puts a pane adjacent to the dashboard. The value `"window"` opens a new tmux window. This key has no effect outside tmux, because iTerm2 always opens a tab |
 | `pane_width` | number | `50` | For the tmux `"pane"` mode only. This is the percent of the window width for the dashboard. The tool limits the value to the range 10 to 90. There is no environment variable for this key |
 | `mouse` | bool | `false` | The wheel and the clicks in the terminal interface. See [Mouse support](#mouse-support-off-by-default) for the disadvantage |
+| `review_browser` | string | none | The browser for the `Shift+P` review. The tool gives the value to `plannotator` as the variable `PLANNOTATOR_BROWSER`. On macOS, a value with a `/` in it that does not end in `.app` is a program, and Plannotator starts it with the URL. Each other value is an application name for `open -a`, for example `"Google Chrome"`. Without this key, the tool gives no variable, and Plannotator keeps its usual behaviour: it reads `PLANNOTATOR_BROWSER`, then `BROWSER`, from the environment of the session, and it opens the default browser if it finds neither. So this key is a convenience, and not the only method. There is no environment variable for this key |
 | `layout` | string | from the width | The layout at the start: `"list"` (one card in each row), `"columns"` (two cards), or `"tiles"` (taller cards, and more of them in each row on a wide screen). If you remove this key, the tool uses the terminal width. Less than 100 columns gives `list`, 100 columns gives `columns`, and 160 columns gives `tiles`. The `v` key changes the layout later, and the tool does not write that change to this file |
 
 The file is optional, and each key in it is also optional. Without the file, the dashboard operates correctly, but the tool has no location for a session. The Enter key then opens a popup that names this file. If the file is not correct JSON, the tool reads it as no file: an empty configuration, with no error and no stop. The tool is equally tolerant with each key. If a value has the incorrect type, for example `"pane_width": "wide"`, the tool ignores that value and uses the default.
@@ -249,12 +253,15 @@ Your `~/.config/messreq/prompts/` directory can contain `.txt` files from an ear
 | `Enter` | Open a Claude session for the selected MR. The tool opens a new tab, focuses the session if an agent is already running in it, or starts a closed session again. For a closed session, the prompt reports the changes after the last poll |
 | `Shift+Enter` or `p` | Open the menu of prompt modes. See below |
 | `o` | Open the MR in the browser, and mark it as seen. This is for macOS only, because the tool starts the `open` program |
+| `Shift+P` | Open a Plannotator review of the selected MR, and mark it as seen. Plannotator shows the review interface in your browser. Nothing opens in the terminal: the tool starts `plannotator review <the URL of the MR>` in the background, and that program continues after messreq stops. Its output goes to `~/.local/state/messreq/review.log`. Read that file if the browser does not open. If a review of this MR is open already, this key opens that review again, and it starts no second one. This key needs the `plannotator` program. Without that program, the tool opens a popup that names it |
 | `m` | Mark each MR as seen |
 | `x` | Delete the connection between this MR and its session. The Claude conversation on the disk stays |
 | `d` | Show or hide the drafts. The tool hides them by default |
 | `v` | Change the layout: `list`, then `columns`, then `tiles`. The tool keeps this change for this run only |
 | `r` | Refresh now |
 | `q` or `Esc` | Stop the tool |
+
+While a review is open, the card shows `🔎` and the port of that review in its top border, for example `🔎 :58022`. The address is always `http://localhost:<the port>`. The tool reads this from the session files that Plannotator writes in `~/.plannotator/sessions/` (or in `PLANNOTATOR_DATA_DIR`), and it writes nothing of its own: when the review stops, the mark goes away. If you have no Plannotator, that directory does not exist, and each card looks the same as before.
 
 The `Shift+Enter` key needs a terminal with the kitty keyboard protocol. The `p` key does the same thing in each terminal. The menu has four modes:
 
@@ -326,6 +333,7 @@ All the files are in `~/.local/state/messreq/`:
 | `state.json` | the snapshot that `--notify` compares against |
 | `heartbeat` | an empty file. The terminal interface changes its time at each tick |
 | `prompts/` | the prompt text for each session |
+| `review.log` | the output of each `Shift+P` review, appended. Nothing removes old lines from this file |
 
 At the first run, `seen.json` and `state.json` are empty. The tool reads this as a quiet start: it records the current state, it highlights no MR, and it sends no notification.
 

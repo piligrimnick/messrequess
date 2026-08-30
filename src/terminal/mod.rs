@@ -39,7 +39,7 @@ use std::collections::HashSet;
 
 use crate::error::WorkError;
 
-pub(crate) use detect::{detect_backend, BackendSource};
+pub(crate) use detect::{command_on_path, detect_backend, BackendSource};
 pub(crate) use iterm2::Iterm2Backend;
 pub(crate) use tmux::TmuxBackend;
 

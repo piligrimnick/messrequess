@@ -1,9 +1,9 @@
 //! The state behind the screen: which MRs there are, what is selected, what is
 //! already acked, and the background load in flight.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::layout::Rect;
 use serde_json::json;
@@ -13,9 +13,14 @@ use super::menu::MenuItem;
 use crate::forge::{Forge, GitlabForge};
 use crate::model::MergeRequest;
 use crate::prompt::PromptMode;
+use crate::review::{live_reviews, review_key, ReviewSession};
 use crate::work::{
     agent_session_ids, load_seen, load_worktabs, mr_key, prune_prompts, save_seen, save_worktabs,
 };
+
+/// How often the event loop re-reads Plannotator's session store — see
+/// `App::poll_reviews`.
+const REVIEW_POLL_SECS: u64 = 2;
 
 /// The open prompt-mode menu (Shift+Enter).
 ///
@@ -73,6 +78,13 @@ pub(crate) struct App {
     // terminal backend is configured (for the open/detached status) — not
     // every session that exists, see `work::agent_session_ids`
     pub(crate) agent_sessions: HashSet<String>,
+    // merge requests with a Plannotator review running right now, keyed by
+    // `review::review_key` (messreq-pmm). Read from Plannotator's own
+    // session store, never written by messreq — see `review`'s module doc.
+    pub(crate) reviews: HashMap<String, ReviewSession>,
+    // when `reviews` was last read, so the event loop can refresh it on a
+    // budget instead of on every tick — see `poll_reviews`
+    pub(crate) reviews_checked: Instant,
     pub(crate) pending: Option<Receiver<Vec<MergeRequest>>>, // background data load
     pub(crate) spinner: usize,                               // spinner animation frame
     pub(crate) menu: Option<PromptMenu>,                     // the open prompt-mode menu
@@ -148,6 +160,8 @@ impl App {
             work: load_worktabs(),
             seen: load_seen(),
             agent_sessions: agent_session_ids(),
+            reviews: live_reviews(),
+            reviews_checked: Instant::now(),
             pending: None,
             spinner: 0,
             menu: None,
@@ -282,6 +296,38 @@ impl App {
 
     pub(crate) fn refresh_agent_sessions(&mut self) {
         self.agent_sessions = agent_session_ids();
+    }
+
+    /// Re-read Plannotator's session store now (messreq-pmm).
+    pub(crate) fn refresh_reviews(&mut self) {
+        self.reviews = live_reviews();
+        self.reviews_checked = Instant::now();
+    }
+
+    /// The same, but at most every `REVIEW_POLL_SECS` — what the event loop
+    /// calls on every tick.
+    ///
+    /// A review appears and disappears without messreq doing anything, so
+    /// the badge cannot wait for the 300-second reload; but the read costs a
+    /// `ps` when the store is not empty (see `review::live_reviews`), which
+    /// is not something to pay twice a second for the rest of the day. A
+    /// couple of seconds is under the threshold where a badge feels late and
+    /// far above the tick rate.
+    ///
+    /// It is not done inside the draw path on purpose — `screen::ui` runs on
+    /// every frame and must never do filesystem work, the same reason
+    /// `agent_sessions` is a field rather than a lookup.
+    pub(crate) fn poll_reviews(&mut self) {
+        if self.reviews_checked.elapsed() >= Duration::from_secs(REVIEW_POLL_SECS) {
+            self.refresh_reviews();
+        }
+    }
+
+    /// The live Plannotator review for this MR, if there is one. `None` is
+    /// the answer for every MR on a machine without Plannotator, which is
+    /// what keeps the card identical to what it was before messreq-pmm.
+    pub(crate) fn review_for(&self, mr: &MergeRequest) -> Option<&ReviewSession> {
+        self.reviews.get(&review_key(&mr.path, mr.number()))
     }
 
     /// Work status of an MR: None — not started; Some(true) — an agent is
@@ -474,6 +520,8 @@ mod tests {
             work: serde_json::Map::new(),
             seen: serde_json::Map::new(),
             agent_sessions: HashSet::new(),
+            reviews: HashMap::new(),
+            reviews_checked: Instant::now(),
             pending: None,
             spinner: 0,
             menu: None,

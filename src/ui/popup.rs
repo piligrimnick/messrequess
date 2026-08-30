@@ -223,6 +223,8 @@ mod tests {
             work: serde_json::Map::new(),
             seen: serde_json::Map::new(),
             agent_sessions: HashSet::new(),
+            reviews: std::collections::HashMap::new(),
+            reviews_checked: std::time::Instant::now(),
             pending: None,
             spinner: 0,
             menu: None,

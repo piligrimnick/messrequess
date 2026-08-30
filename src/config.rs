@@ -13,7 +13,8 @@
 //!   "open_mode": "pane",
 //!   "pane_width": 50,
 //!   "mouse": false,
-//!   "layout": "columns"
+//!   "layout": "columns",
+//!   "review_browser": "Google Chrome"
 //! }
 //! ```
 //!
@@ -90,6 +91,30 @@
 //! deliberately not written back to this file, so the key stays a look at
 //! something rather than a change to the configuration.
 //!
+//! `review_browser` (messreq-vom) names the browser the Plannotator review
+//! opens in — the `Shift+P` key, see `work::start_review`. messreq passes the
+//! value to the launched process as `PLANNOTATOR_BROWSER`, which is
+//! Plannotator's own interface: on macOS a value with a `/` in it that does
+//! not end in `.app` is run directly as `<value> <url>`, anything else goes
+//! to `open -a <value> <url>`. So an application name (`"Google Chrome"`,
+//! `"Island"`) and a path to an executable both work, and the name is the
+//! same one `open -a` takes.
+//!
+//! Optional, and unset means unset: with no key, messreq adds nothing to the
+//! command, and whatever `PLANNOTATOR_BROWSER` or `BROWSER` the session's own
+//! shell exports still reaches Plannotator (it reads `PLANNOTATOR_BROWSER ||
+//! BROWSER` itself). There is no default — the right browser is one
+//! machine's fact, not something this tool can guess.
+//!
+//! Config-only, no environment override, for the reason `pane_width` has
+//! none: which browser is installed on this machine does not change from run
+//! to run, and Plannotator's own two variables already cover the one-off case
+//! without a third messreq-flavored spelling of them in front. Free-form, so
+//! there is also no unknown-value error to raise the way there is for
+//! `terminal`/`open_mode`/`layout` — messreq cannot know which applications
+//! exist on the machine, and Plannotator reports an unopenable browser
+//! itself.
+//!
 //! JSON rather than TOML: serde_json is already a dependency, while TOML would
 //! need either a new crate or a hand-written parser — and the config structure
 //! is flat, so it maps onto JSON one to one.
@@ -135,6 +160,13 @@ struct Config {
     /// Raw `"layout"` value, validated later by `card_layout` — same reason
     /// as `terminal`/`open_mode` above.
     layout: Option<String>,
+    /// `"review_browser"` — the browser the Plannotator review opens in
+    /// (messreq-vom), stored trimmed. Free-form, unlike
+    /// `terminal`/`open_mode`/`layout`: there is no vocabulary of valid
+    /// values to check it against, so nothing is kept around to report back
+    /// as a typo. Trimmed on the way in because the value is handed to
+    /// `open -a`, where a stray space is a different application name.
+    review_browser: Option<String>,
 }
 
 fn home_dir() -> String {
@@ -211,6 +243,12 @@ impl Config {
                 .get("layout")
                 .and_then(|s| s.as_str())
                 .filter(|s| !s.trim().is_empty())
+                .map(String::from),
+            review_browser: v
+                .get("review_browser")
+                .and_then(|s| s.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
                 .map(String::from),
         }
     }
@@ -398,6 +436,19 @@ fn resolve_open_mode_with(
 /// point at the way there is for a backend/mode name.
 pub(crate) fn pane_width() -> u8 {
     Config::load().pane_width.unwrap_or(DEFAULT_PANE_WIDTH)
+}
+
+/// The browser the Plannotator review opens in, from the `"review_browser"`
+/// key (messreq-vom) — `None` when the key is absent or blank, which is the
+/// whole point of the setting: nothing is passed then, and Plannotator keeps
+/// doing what it does today (see the module doc, and `work::review_command`
+/// for how the value reaches the launched process).
+///
+/// Infallible and config-only, the same shape `pane_width` has: a free-form
+/// string has no vocabulary to validate against, and no per-run reason to
+/// override.
+pub(crate) fn review_browser() -> Option<String> {
+    Config::load().review_browser
 }
 
 /// Whether the TUI should claim the mouse (`EnableMouseCapture`) — see the
@@ -759,6 +810,42 @@ mod tests {
     // messreq-2lx: the `"layout"` key and MESSREQ_LAYOUT, with the same
     // precedence as `terminal`/`open_mode` — except that the last step is
     // the terminal width rather than a constant.
+
+    #[test]
+    fn config_parses_the_review_browser_key() {
+        assert_eq!(
+            Config::parse(r#"{"review_browser": "Google Chrome"}"#)
+                .review_browser
+                .as_deref(),
+            Some("Google Chrome")
+        );
+    }
+
+    #[test]
+    fn review_browser_is_trimmed_because_it_becomes_an_application_name() {
+        // `open -a "Island "` is not `open -a "Island"`.
+        assert_eq!(
+            Config::parse(r#"{"review_browser": "  Island  "}"#)
+                .review_browser
+                .as_deref(),
+            Some("Island")
+        );
+    }
+
+    #[test]
+    fn no_review_browser_key_is_none_not_a_blank_string() {
+        // `None` is what makes messreq pass nothing at all and leave
+        // Plannotator's own PLANNOTATOR_BROWSER/BROWSER handling alone.
+        assert_eq!(Config::parse(CFG).review_browser, None);
+        assert_eq!(
+            Config::parse(r#"{"review_browser": "  "}"#).review_browser,
+            None
+        );
+        assert_eq!(
+            Config::parse(r#"{"review_browser": 7}"#).review_browser,
+            None
+        );
+    }
 
     #[test]
     fn config_parses_the_layout_key() {

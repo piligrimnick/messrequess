@@ -26,8 +26,8 @@ use crate::model::MergeRequest;
 use crate::prompt::{build_prompt_line, PromptMode};
 use crate::time::rel_age;
 use crate::work::{
-    deliver_to_live_session, focus_iterm, mr_key, resume_work, resume_work_with_prompt,
-    save_worktabs, start_work, touch_heartbeat,
+    deliver_to_live_session, focus_iterm, mr_key, reopen_review, resume_work,
+    resume_work_with_prompt, save_worktabs, start_review, start_work, touch_heartbeat,
 };
 
 const REFRESH_SECS: u64 = 300;
@@ -334,6 +334,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
         // here would silence it for anyone whose GUI is closed.
         touch_heartbeat();
         app.poll_pending();
+        // Plannotator's session store changes without messreq doing
+        // anything — a review ends, or one is started from a terminal — so
+        // the badge is refreshed on a timer of its own rather than only on a
+        // reload (messreq-pmm). Budgeted, and never in the draw path: see
+        // `App::poll_reviews`.
+        app.poll_reviews();
         if app.is_loading() {
             app.spinner = app.spinner.wrapping_add(1);
         }
@@ -442,6 +448,41 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                                 let url = app.items[i].url.clone();
                                 let _ = Command::new("open").arg(url).output();
                                 app.mark_seen(i); // looked at it in the browser = saw it
+                            }
+                        }
+                        // Shift+P — a Plannotator browser review of the
+                        // selected MR (messreq-vom). Like `o`, nothing opens
+                        // in the terminal: the review runs detached and
+                        // invisible, and its output goes to `review.log`
+                        // rather than into this frame (see
+                        // `work::start_review`). `plannotator` is optional,
+                        // and a machine without it says so in the popup
+                        // rather than failing silently.
+                        //
+                        // A review already running for this MR is reopened
+                        // instead of starting a second one (messreq-pmm) —
+                        // the same shape Enter has, where an existing session
+                        // is focused rather than duplicated. The store is
+                        // re-read first: it is polled on a budget (see
+                        // `App::poll_reviews`), and this is the one moment
+                        // where a stale answer would start the duplicate the
+                        // key exists to avoid.
+                        KeyCode::Char('P') => {
+                            if let Some(i) = app.selected_item() {
+                                app.refresh_reviews();
+                                let live = app.review_for(&app.items[i]).map(|r| r.url.clone());
+                                match live {
+                                    Some(url) => {
+                                        reopen_review(&url);
+                                        app.mark_seen(i);
+                                    }
+                                    None => match start_review(&app.items[i]) {
+                                        // Opening the review is looking at the
+                                        // MR, the same reading `o` already gets.
+                                        Ok(()) => app.mark_seen(i),
+                                        Err(err) => app.notice = Some(err.to_string()),
+                                    },
+                                }
                             }
                         }
                         KeyCode::Char('x') => {
@@ -580,6 +621,8 @@ mod tests {
             work: serde_json::Map::new(),
             seen: serde_json::Map::new(),
             agent_sessions: HashSet::new(),
+            reviews: std::collections::HashMap::new(),
+            reviews_checked: Instant::now(),
             pending: None,
             spinner: 0,
             menu: None,

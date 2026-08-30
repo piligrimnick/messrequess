@@ -222,6 +222,7 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
                         cell,
                         mr,
                         app.work_status(mr),
+                        app.review_for(mr),
                         *oi == app.sel,
                         app.is_new(mr),
                     );
@@ -235,10 +236,18 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     // current one is what the user is looking at, and the hint is worth more
     // as an answer to "what happens if I press this".
     let next_layout = app.layout.next().as_str();
+    // The line is drawn in a 110-cell strip (118 columns of frame, minus the
+    // border and its padding on both sides), and `⇧P review` was the hint
+    // that ran it out of room: the mouse variant is three cells longer than
+    // the plain one, and `🖱` itself takes two of them. What paid for it: the
+    // padding space at each end, which the gray background makes redundant,
+    // and `refresh` → `reload`, the word the code itself uses
+    // (`App::start_reload`). `the_footer_hints_the_review_key_and_still_fits_the_frame`
+    // guards the fit in both variants, on the longest layout name.
     let footer_text = if app.mouse_enabled {
-        format!(" ↑↓←→/🖱 select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  v {next_layout}  r refresh  q quit ")
+        format!("↑↓←→/🖱 select  ↵ Claude  ⇧↵/p mode  o URL  ⇧P review  m seen  x forget  d drafts  v {next_layout}  r reload  q quit")
     } else {
-        format!(" ↑↓←→ select  ↵ Claude  ⇧↵/p mode  o URL  m seen  x forget  d drafts  v {next_layout}  r refresh  q quit ")
+        format!("↑↓←→ select  ↵ Claude  ⇧↵/p mode  o URL  ⇧P review  m seen  x forget  d drafts  v {next_layout}  r reload  q quit")
     };
     let footer = Line::from(vec![Span::styled(
         footer_text,
@@ -485,6 +494,8 @@ mod render_tests {
             work: serde_json::Map::new(),
             seen: serde_json::Map::new(),
             agent_sessions: HashSet::new(),
+            reviews: std::collections::HashMap::new(),
+            reviews_checked: Instant::now(),
             pending: None,
             spinner: 0,
             menu: None,
@@ -700,6 +711,69 @@ mod render_tests {
             let text = render(&mut app, 118, 46);
             assert!(text.contains("↑↓←→ select"), "{text}");
         }
+    }
+
+    #[test]
+    fn a_live_plannotator_review_is_marked_on_the_card_in_every_layout() {
+        // The marker goes in the top border next to the number, so it has to
+        // survive the narrow layouts too — that is the whole reason it is not
+        // on the meta line (see `card::review_marker`).
+        for layout in [CardLayout::List, CardLayout::Columns, CardLayout::Tiles] {
+            let mut app = app(2, 0, layout);
+            app.reviews.insert(
+                crate::review::review_key("acme/backend", 1),
+                crate::review::ReviewSession {
+                    port: 58022,
+                    url: "http://localhost:58022".to_string(),
+                },
+            );
+            let text = render(&mut app, 118, 46);
+            assert!(text.contains("🔎 :58022"), "{layout:?}:\n{text}");
+        }
+    }
+
+    #[test]
+    fn a_card_without_a_live_review_says_nothing_about_one() {
+        // The dashboard of someone who does not use Plannotator: the store is
+        // empty, and every card is exactly what it was before messreq-pmm.
+        let mut app = app(2, 1, CardLayout::List);
+        let text = render(&mut app, 118, 46);
+        assert!(!text.contains("🔎"), "{text}");
+    }
+
+    #[test]
+    fn only_the_merge_request_with_the_review_carries_the_marker() {
+        let mut app = app(2, 0, CardLayout::List);
+        app.reviews.insert(
+            crate::review::review_key("acme/backend", 2),
+            crate::review::ReviewSession {
+                port: 49641,
+                url: "http://localhost:49641".to_string(),
+            },
+        );
+        let text = render(&mut app, 118, 46);
+        // Card !2 has it, card !1 does not — one marker in the frame.
+        assert_eq!(text.matches("🔎").count(), 1, "{text}");
+        assert!(text.contains("🔎 :49641"), "{text}");
+    }
+
+    #[test]
+    fn the_footer_hints_the_review_key_and_still_fits_the_frame() {
+        // ⇧P is a key with no other clue on screen, so the footer is the only
+        // place it is announced. `q quit` is asserted with it: the footer is a
+        // single line, so a hint that pushes it past the frame width is cut
+        // off silently, and the last item is what disappears first.
+        let mut app = app(3, 0, CardLayout::List);
+        let text = render(&mut app, 118, 46);
+        assert!(text.contains("⇧P review"), "{text}");
+        assert!(text.contains("q quit"), "{text}");
+
+        // The mouse footer is the longer of the two (it names the wheel as
+        // well), so it is the one that runs out of room first.
+        app.mouse_enabled = true;
+        let text = render(&mut app, 118, 46);
+        assert!(text.contains("⇧P review"), "{text}");
+        assert!(text.contains("q quit"), "{text}");
     }
 
     #[test]

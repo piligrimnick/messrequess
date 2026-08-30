@@ -15,7 +15,9 @@
 //! `gitlab` is its GitLab implementation, going through `glab`. `config` says
 //! where the local checkouts are, `prompt` builds the text for Claude and `work`
 //! opens the session — through the `terminal` backend seam (iTerm2 by default,
-//! tmux as an alternative, see `terminal`'s module doc). `ui` draws the
+//! tmux as an alternative, see `terminal`'s module doc). `review` reads
+//! Plannotator's own session store to say which MRs have a review open
+//! (messreq-pmm). `ui` draws the
 //! dashboard and runs a notification pass after each load, `notify` decides
 //! and delivers what that pass reports. `cli` is the `--help`/unknown-
 //! flag argument parsing that has to work before any of that — before `glab`
@@ -32,6 +34,7 @@ pub mod migrate;
 pub mod model;
 pub mod notify;
 pub mod prompt;
+pub(crate) mod review;
 pub(crate) mod terminal;
 pub(crate) mod time;
 pub mod ui;

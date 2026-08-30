@@ -77,6 +77,11 @@ TUI key bindings:
   Shift+Enter, p   open the prompt-mode menu (Surface / My threads / Deep /
                    Blank)
   o                open the selected MR in the browser
+  P                open a Plannotator review of the selected MR in the
+                   browser, or reopen the one already running for it (the
+                   card shows its port); runs detached, output goes to
+                   ~/.local/state/messreq/review.log (needs `plannotator`;
+                   optional)
   m                mark everything seen
   x                forget the session binding for the selected MR
   d                toggle draft MRs

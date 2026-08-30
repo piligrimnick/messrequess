@@ -335,6 +335,192 @@ pub(crate) fn resume_work_with_prompt(
     open_session(&claude_script(&work_dir, &args), sid, name)
 }
 
+/// The external program a Plannotator review runs (messreq-vom). Optional,
+/// the way `terminal-notifier` is: nothing else in the dashboard touches it,
+/// so a machine without it loses one key and keeps everything else.
+const REVIEW_TOOL: &str = "plannotator";
+
+/// Where the output of every Plannotator review goes: one appended log in the
+/// state directory, next to the files listed in this module's doc.
+///
+/// A file rather than `/dev/null`, and a file rather than the terminal. The
+/// review runs detached and invisible (see `start_review`), so if
+/// `plannotator` refuses the URL, or `glab` is not authenticated, or the tool
+/// dies on startup, that message is the only evidence there is — silence plus
+/// no browser window is not a diagnosable state. It cannot go to messreq's
+/// own stdout either: the TUI owns the terminal, and a line printed into it
+/// corrupts the frame.
+///
+/// One log for the feature, appended, not one file per review: reviews are
+/// frequent and each one usually says nothing at all. Nothing rotates it —
+/// the same growth `messreq-m50` tracks for `notify.err.log` in this
+/// directory.
+fn review_log_path() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".local/state/messreq/review.log")
+}
+
+/// The log opened for appending, or `None` if that fails. `None` costs the
+/// diagnostics for this one review; it must not cost the review itself, so
+/// the caller falls back to discarding the output rather than refusing to
+/// start.
+fn open_review_log() -> Option<std::fs::File> {
+    let path = review_log_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .ok()
+}
+
+/// The POSIX command line handed to `sh -c`. The trailing `&` is the whole
+/// detachment mechanism — see `start_review`.
+///
+/// `browser` is the `"review_browser"` config key (`config::review_browser`,
+/// messreq-vom). Some value → the command carries
+/// `PLANNOTATOR_BROWSER=<browser>` as a variable assignment in front of it,
+/// which is the interface Plannotator itself reads: on macOS a value with a
+/// `/` in it that does not end in `.app` is run directly as `<value> <url>`,
+/// anything else goes to `open -a <value> <url>`. `None` → nothing is added,
+/// and whatever `PLANNOTATOR_BROWSER` or `BROWSER` messreq's own environment
+/// carries reaches Plannotator untouched. The assignment is a prefix on the
+/// one command rather than an `export`, so it applies to plannotator and to
+/// nothing else in the shell.
+///
+/// No `cd`: `plannotator review <MR_URL>` fetches the merge request through
+/// `glab` and prepares its own checkout of it (`--local`, its default), so
+/// the directory it starts in has no bearing on what gets reviewed. That is
+/// what keeps this key working for a project with no entry in `config.json`.
+fn review_command(url: &str, browser: Option<&str>) -> String {
+    let browser_env = match browser {
+        Some(name) => format!("PLANNOTATOR_BROWSER={} ", shq(name)),
+        None => String::new(),
+    };
+    format!("{}{} review {} &", browser_env, REVIEW_TOOL, shq(url))
+}
+
+/// How to hand a URL to a browser, mirroring the rule Plannotator applies to
+/// `PLANNOTATOR_BROWSER` itself on macOS (see `config`'s module doc): a value
+/// with a `/` in it that does not end in `.app` is an executable and gets the
+/// URL as its argument; anything else is an application name for `open -a`.
+/// With no value configured it is plain `open`, exactly what the `o` key does.
+///
+/// Mirrored rather than delegated because Plannotator has no "open this URL"
+/// command — `plannotator sessions --open N` takes a position in a list,
+/// which is not a stable handle on a session. The point of mirroring it is
+/// that a review reopens in the browser it opened in, instead of the one the
+/// system happens to default to.
+///
+/// Pure: returns the program and its arguments, so the rule is unit-tested
+/// without opening anything.
+fn browser_open_command(url: &str, browser: Option<&str>) -> (String, Vec<String>) {
+    match browser {
+        Some(value) if value.contains('/') && !value.ends_with(".app") => {
+            (value.to_string(), vec![url.to_string()])
+        }
+        Some(value) => (
+            "open".to_string(),
+            vec!["-a".to_string(), value.to_string(), url.to_string()],
+        ),
+        None => ("open".to_string(), vec![url.to_string()]),
+    }
+}
+
+/// Bring an already running Plannotator review back to the front by opening
+/// its recorded address (messreq-pmm). Short-lived, like the `o` key's
+/// `open`: the browser is handed the URL and this returns — the review
+/// itself is the detached process `start_review` left running.
+///
+/// The address comes from Plannotator's own session file rather than being
+/// rebuilt from the port, and `plannotator sessions --open N` is not used:
+/// `N` is a position in a list that changes as sessions come and go, while
+/// the recorded URL identifies exactly one review.
+pub(crate) fn reopen_review(url: &str) {
+    let (program, args) = browser_open_command(url, crate::config::review_browser().as_deref());
+    let _ = Command::new(program).args(args).output();
+}
+
+/// Start a Plannotator review of this MR: the browser opens, and nothing
+/// else happens on screen (messreq-vom).
+///
+/// It is a detached child, not a terminal session. `plannotator review` runs
+/// for as long as the human takes and prints their feedback at the end, but
+/// nothing here reads that feedback — the review is written in the browser
+/// UI, which is the point of the tool. That printout only matters to a
+/// calling agent, so a tab or pane to hold it would be a visible window whose
+/// content nobody reads.
+///
+/// How the detachment works, and why it is `sh -c '… &'` rather than a plain
+/// `spawn()`. `std::process` has no "disown": a spawned child stays this
+/// process's child, so dropping the handle without waiting leaves a zombie in
+/// the table for as long as messreq runs, and every review adds one. Handing
+/// the command to `sh` with a trailing `&` splits the two problems apart —
+/// `sh` forks plannotator, exits immediately, and `child.wait()` below reaps
+/// `sh` on the spot, while plannotator has already been reparented to pid 1
+/// and outlives messreq. Verified rather than assumed: with a 60-second
+/// stand-in for plannotator, `ps` showed no `<defunct>` child of the parent
+/// at any point, the stand-in's PPID was 1 while the parent was still alive,
+/// and it was still running after the parent exited.
+///
+/// `wait()` therefore costs nothing — `sh` is already gone by the time it is
+/// called; it is there to reap, not to wait for the review.
+///
+/// stdin is `/dev/null` so the detached process can never reach for the
+/// terminal the TUI is drawing in; stdout and stderr go to `review.log` (see
+/// `review_log_path`).
+///
+/// No `TerminalBackend` on this path, and so no `config::terminal_backend()`
+/// / `config::open_mode()`: a machine with neither tmux nor a working iTerm2
+/// cannot open a Claude session, but it can open a review.
+///
+/// Both failures the user can hit before anything is launched — no
+/// `plannotator` on `$PATH`, and a merge request with no URL — are reported
+/// as a `WorkError` the caller puts in the popup, not as a panic and not as a
+/// silent no-op.
+pub(crate) fn start_review(mr: &MergeRequest) -> Result<(), WorkError> {
+    if mr.url.is_empty() {
+        return Err(WorkError::NoMergeRequestUrl {
+            number: mr.number(),
+        });
+    }
+    if !crate::terminal::command_on_path(REVIEW_TOOL) {
+        return Err(WorkError::MissingTool {
+            tool: REVIEW_TOOL,
+            purpose: "open a browser review of a merge request",
+        });
+    }
+    let command = review_command(&mr.url, crate::config::review_browser().as_deref());
+    let mut sh = Command::new("sh");
+    sh.arg("-c")
+        .arg(&command)
+        .stdin(std::process::Stdio::null());
+    match open_review_log() {
+        // The backgrounded plannotator inherits these two descriptors from
+        // `sh`, which is how its output reaches the log without the command
+        // line carrying a redirection of its own.
+        Some(log) => {
+            let errors = log.try_clone().ok();
+            sh.stdout(std::process::Stdio::from(log));
+            match errors {
+                Some(errors) => sh.stderr(std::process::Stdio::from(errors)),
+                None => sh.stderr(std::process::Stdio::null()),
+            };
+        }
+        None => {
+            sh.stdout(std::process::Stdio::null());
+            sh.stderr(std::process::Stdio::null());
+        }
+    }
+    let mut child = sh.spawn().map_err(|err| WorkError::ReviewLaunchFailed {
+        detail: err.to_string(),
+    })?;
+    let _ = child.wait();
+    Ok(())
+}
+
 /// `pub(crate)`: the iTerm2 backend also writes its launch sentinel here (see
 /// `terminal::iterm2`).
 pub(crate) fn prompts_dir() -> PathBuf {
@@ -492,6 +678,103 @@ mod tests {
         // URL carries `/` and `:`, which single quotes pass through unchanged.
         let url = "https://gitlab.example.com/acme/backend/-/merge_requests/418";
         assert_eq!(shq(&session_name(&mr_with_url(url))), format!("'{url}'"));
+    }
+
+    #[test]
+    fn review_command_runs_plannotator_on_the_quoted_url() {
+        let url = "https://gitlab.example.com/acme/backend/-/merge_requests/418";
+        let command = review_command(url, None);
+        assert!(command.starts_with(&format!("plannotator review '{url}'")));
+    }
+
+    #[test]
+    fn review_command_backgrounds_the_review() {
+        // The trailing `&` is what detaches it: `sh` forks plannotator and
+        // exits, so `start_review` has an already-finished child to reap and
+        // the review itself is reparented (see `start_review`).
+        assert!(review_command("https://example.com/mr/1", None).ends_with(" &"));
+    }
+
+    #[test]
+    fn review_command_without_a_configured_browser_sets_no_variable() {
+        // The unset case is the point of the setting: Plannotator then reads
+        // whatever PLANNOTATOR_BROWSER/BROWSER the environment carries.
+        let command = review_command("https://example.com/mr/1", None);
+        assert!(!command.contains("PLANNOTATOR_BROWSER"));
+    }
+
+    #[test]
+    fn review_command_passes_the_configured_browser_as_an_env_prefix() {
+        let command = review_command("https://example.com/mr/1", Some("Island"));
+        assert!(command.starts_with("PLANNOTATOR_BROWSER='Island' plannotator review "));
+    }
+
+    #[test]
+    fn review_command_quotes_a_browser_name_with_a_space_in_it() {
+        // The realistic case: `open -a Google Chrome` is two arguments, and
+        // the command goes to a shell, so the name has to survive as one.
+        let command = review_command("https://example.com/mr/1", Some("Google Chrome"));
+        assert!(command.starts_with("PLANNOTATOR_BROWSER='Google Chrome' plannotator review "));
+    }
+
+    #[test]
+    fn review_command_does_not_cd_anywhere() {
+        // plannotator prepares its own checkout of the merge request, so the
+        // key works for a project that has no entry in config.json.
+        assert!(!review_command("https://example.com/mr/1", None).contains("cd "));
+    }
+
+    #[test]
+    fn reopening_without_a_configured_browser_is_plain_open() {
+        let (program, args) = browser_open_command("http://localhost:58022", None);
+        assert_eq!(program, "open");
+        assert_eq!(args, vec!["http://localhost:58022"]);
+    }
+
+    #[test]
+    fn reopening_with_an_application_name_goes_through_open_a() {
+        let (program, args) = browser_open_command("http://localhost:58022", Some("Google Chrome"));
+        assert_eq!(program, "open");
+        assert_eq!(args, vec!["-a", "Google Chrome", "http://localhost:58022"]);
+    }
+
+    #[test]
+    fn reopening_with_a_path_to_an_executable_runs_it_directly() {
+        // Plannotator's own rule for the same value: a `/` and no `.app`
+        // means an executable, not an application name.
+        let (program, args) =
+            browser_open_command("http://localhost:58022", Some("/usr/bin/open-in-browser"));
+        assert_eq!(program, "/usr/bin/open-in-browser");
+        assert_eq!(args, vec!["http://localhost:58022"]);
+    }
+
+    #[test]
+    fn reopening_with_a_path_to_an_app_bundle_still_goes_through_open_a() {
+        let (program, args) =
+            browser_open_command("http://localhost:58022", Some("/Applications/Island.app"));
+        assert_eq!(program, "open");
+        assert_eq!(
+            args,
+            vec!["-a", "/Applications/Island.app", "http://localhost:58022"]
+        );
+    }
+
+    #[test]
+    fn the_review_log_is_one_appended_file_in_the_state_directory() {
+        let path = review_log_path();
+        assert!(
+            path.ends_with(".local/state/messreq/review.log"),
+            "{path:?}"
+        );
+    }
+
+    #[test]
+    fn start_review_refuses_a_merge_request_with_no_url() {
+        // Checked before anything is launched — `plannotator review ""`
+        // would review whatever local changes messreq's own working
+        // directory happens to have, which is a different action.
+        let err = start_review(&mr_with_url("")).unwrap_err();
+        assert!(matches!(err, WorkError::NoMergeRequestUrl { number: 418 }));
     }
 
     #[test]

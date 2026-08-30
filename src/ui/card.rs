@@ -7,6 +7,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Padding, Paragraph};
 use ratatui::Frame;
 
 use crate::model::{CiStatus, MergeRequest, Thread};
+use crate::review::ReviewSession;
 use crate::time::{age_days, rel_age};
 
 fn pipe_glyph(status: CiStatus) -> Span<'static> {
@@ -181,7 +182,34 @@ fn fit_groups(groups: Vec<Vec<Span<'static>>>, max_width: usize) -> Vec<Span<'st
 /// highlighted background. Shared by `render_card` and `render_tile` so the
 /// two never drift apart on the parts that are the same card, only on how
 /// many lines of content go inside.
-fn card_block(mr: &MergeRequest, selected: bool) -> Block<'static> {
+/// Where a live Plannotator review is announced on a card: in the top
+/// border, next to the merge request number, as `🔎 :58022` (messreq-pmm).
+///
+/// Three places were possible and two were rejected. The meta line is the
+/// obvious one and the wrong one: at two cards abreast it is already at its
+/// limit — that is what forced `fit_groups` in messreq-2lx — so a review
+/// group appended there would be dropped by the width rule in exactly the
+/// `list` and `columns` layouts where a user is most likely to be looking. A
+/// sixth line on a tile was the other: tiles are a fixed `layout::TILE_H`
+/// tall, so it would cost every tile a row that is blank for every MR
+/// without a review. The title bar has room in all three layouts, is never
+/// truncated at these widths, and puts the fact next to the identity of the
+/// card it belongs to.
+///
+/// The port, not the URL: `http://localhost:` is the same eleven characters
+/// on every session, and the port is the part that identifies one. Anyone
+/// who wants the address types `localhost:58022`; anyone who wants the
+/// review presses ⇧P, which reopens it.
+fn review_marker(review: &ReviewSession) -> Span<'static> {
+    Span::styled(
+        format!("🔎 :{} ", review.port),
+        Style::default()
+            .fg(Color::LightMagenta)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+fn card_block(mr: &MergeRequest, selected: bool, review: Option<&ReviewSession>) -> Block<'static> {
     let sev = mr.action_sev.color();
     // One border shape and one border weight for every card. The border
     // colour is severity and nothing else; the selection is carried by the
@@ -201,12 +229,17 @@ fn card_block(mr: &MergeRequest, selected: bool) -> Block<'static> {
         .border_style(border_style)
         .padding(Padding::horizontal(1))
         .title_top(
-            Line::from(Span::styled(
-                left,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ))
+            Line::from(
+                [Span::styled(
+                    left,
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )]
+                .into_iter()
+                .chain(review.map(review_marker))
+                .collect::<Vec<_>>(),
+            )
             .left_aligned(),
         )
         .title_top(
@@ -238,10 +271,11 @@ pub(crate) fn render_card(
     area: ratatui::layout::Rect,
     mr: &MergeRequest,
     work: Option<(bool, &serde_json::Value)>,
+    review: Option<&ReviewSession>,
     selected: bool,
     is_new: bool,
 ) {
-    let block = card_block(mr, selected);
+    let block = card_block(mr, selected, review);
     let inner = block.inner(area);
     f.render_widget(block, area);
 
@@ -267,10 +301,11 @@ pub(crate) fn render_tile(
     area: ratatui::layout::Rect,
     mr: &MergeRequest,
     work: Option<(bool, &serde_json::Value)>,
+    review: Option<&ReviewSession>,
     selected: bool,
     is_new: bool,
 ) {
-    let block = card_block(mr, selected);
+    let block = card_block(mr, selected, review);
     let inner = block.inner(area);
     f.render_widget(block, area);
 

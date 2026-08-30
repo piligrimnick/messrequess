@@ -1,6 +1,6 @@
-//! The error type returned along the "open a Claude session for this MR" path:
-//! `work_dir_for_mr`, `start_work`, `resume_work`, `config::terminal_backend`,
-//! and each `TerminalBackend::open`.
+//! The error type returned along the "open a terminal session for this MR"
+//! path: `work_dir_for_mr`, `start_work`, `resume_work`, `start_review`,
+//! `config::terminal_backend`, and each `TerminalBackend::open`.
 //!
 //! These used to return `Result<_, String>`. A plain string can be shown to a
 //! human, but a caller cannot branch on it — once the code is split across
@@ -64,6 +64,30 @@ pub(crate) enum WorkError {
         source: TerminalValueSource,
         config_path: PathBuf,
     },
+    /// An optional external program this action needs is not on `$PATH`.
+    /// "Optional" the way `terminal-notifier` is: the dashboard loads, draws
+    /// and refreshes without it, and only the one key that drives it can
+    /// fail. `tool` names the program, `purpose` says what the key was about
+    /// to do with it, so the popup answers both "what is missing" and "why
+    /// did messreq want it" — a user who never presses that key should not
+    /// have to install anything (messreq-vom).
+    MissingTool {
+        tool: &'static str,
+        purpose: &'static str,
+    },
+    /// `sh` itself could not be started for a detached Plannotator review
+    /// (`work::start_review`). Not the review failing — that lands in
+    /// `review.log`, since by then plannotator is running with nobody
+    /// watching it — but the spawn never happening at all, which leaves no
+    /// browser window and no log line to explain the silence.
+    ReviewLaunchFailed { detail: String },
+    /// The merge request carries no web URL, so there is nothing to hand to
+    /// a tool that takes one (`plannotator review <MR_URL>`). `base_from`
+    /// defaults a missing `web_url` to an empty string, and passing that on
+    /// would silently turn a merge-request review into a review of whatever
+    /// local changes the new session happened to start in — a different
+    /// action, not a degraded one.
+    NoMergeRequestUrl { number: u64 },
     /// No `"terminal"` key was set, and auto-detection (messreq-e5t.5) found
     /// nothing usable: not inside tmux, no iTerm2 with a working Python API,
     /// and no tmux on `$PATH` either. Distinct from `UnknownConfigValue` —
@@ -143,6 +167,24 @@ impl fmt::Display for WorkError {
                      Valid values: {valid} — or {unset_hint} to {fallback}.",
                 )
             }
+            WorkError::MissingTool { tool, purpose } => write!(
+                f,
+                "`{tool}` is not installed.\n\nmessreq runs it to {purpose}.\n\n\
+                 Install it, or check that it is on the PATH messreq itself was started with. \
+                 Everything else in the dashboard works without it."
+            ),
+            WorkError::ReviewLaunchFailed { detail } => write!(
+                f,
+                "Could not start the review.\n\n{detail}\n\n\
+                 messreq starts `plannotator` through `sh`, in the background; \
+                 this is that start failing, not the review itself."
+            ),
+            WorkError::NoMergeRequestUrl { number } => write!(
+                f,
+                "Merge request !{number} has no URL.\n\n\
+                 The provider response carried no web address for it, so there is nothing \
+                 to open a review on."
+            ),
             WorkError::NoTerminalBackend { config_path } => write!(
                 f,
                 "No terminal backend is available to open a Claude session.\n\n\
@@ -187,6 +229,36 @@ mod tests {
         let text = unknown_terminal("kitty", TerminalValueSource::Config).to_string();
         assert!(text.contains("\"terminal\" key in /home/me/.config/messreq/config.json"));
         assert!(!text.contains("MESSREQ_TERMINAL"));
+    }
+
+    #[test]
+    fn missing_tool_names_the_tool_and_what_it_was_wanted_for() {
+        let text = WorkError::MissingTool {
+            tool: "plannotator",
+            purpose: "open a browser review of a merge request",
+        }
+        .to_string();
+        assert!(text.contains("`plannotator` is not installed"));
+        assert!(text.contains("open a browser review of a merge request"));
+        // The point of the variant: the rest of the dashboard is unaffected,
+        // so the popup has to say so rather than read like a broken install.
+        assert!(text.contains("works without it"));
+    }
+
+    #[test]
+    fn review_launch_failure_carries_the_underlying_reason() {
+        let text = WorkError::ReviewLaunchFailed {
+            detail: "No such file or directory (os error 2)".to_string(),
+        }
+        .to_string();
+        assert!(text.contains("Could not start the review"));
+        assert!(text.contains("No such file or directory"));
+    }
+
+    #[test]
+    fn no_merge_request_url_names_the_merge_request() {
+        let text = WorkError::NoMergeRequestUrl { number: 418 }.to_string();
+        assert!(text.contains("!418"));
     }
 
     #[test]

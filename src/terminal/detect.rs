@@ -123,7 +123,13 @@ fn term_program_is_iterm2() -> bool {
 /// Existence on `$PATH`, via `which` rather than trying to run the tool
 /// itself — a probe belongs only where presence does not already prove the
 /// tool works (see `iterm2_probe_ok` below).
-fn command_on_path(cmd: &str) -> bool {
+///
+/// `pub(crate)`: `work::start_review` asks the same question about
+/// `plannotator` before it launches a session that would otherwise open,
+/// print `command not found`, and die (messreq-vom). The answer means the
+/// same thing for both callers, so it stays one function rather than a
+/// second copy of the `which` call.
+pub(crate) fn command_on_path(cmd: &str) -> bool {
     std::process::Command::new("which")
         .arg(cmd)
         .output()
