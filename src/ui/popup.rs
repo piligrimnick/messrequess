@@ -127,7 +127,7 @@ pub(crate) fn render_menu(f: &mut Frame, app: &App) {
         Style::default().fg(Color::DarkGray),
     )));
     lines.push(Line::from(Span::styled(
-        "n new session with this prompt",
+        format!("{} new session with this prompt", app.key_layout.label('n')),
         Style::default().fg(Color::DarkGray),
     )));
     f.render_widget(Paragraph::new(lines), inner);
@@ -191,7 +191,11 @@ pub(crate) fn render_confirm(f: &mut Frame, app: &App) {
         .collect();
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
-        "y / enter confirm · n / esc cancel",
+        format!(
+            "{} / enter confirm · {} / esc cancel",
+            app.key_layout.label('y'),
+            app.key_layout.label('n')
+        ),
         Style::default().fg(Color::DarkGray),
     )));
     f.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
@@ -231,6 +235,7 @@ mod tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            key_layout: crate::ui::keyboard::KeyLayout::Latin,
             mouse_enabled: false,
             card_rects: vec![],
             read_only: false,
@@ -409,6 +414,26 @@ mod tests {
         assert!(dump.contains("!7"));
         assert!(dump.contains("start a new session"));
         assert!(dump.contains("y / enter confirm"));
+    }
+
+    #[test]
+    fn popup_hints_use_the_inferred_russian_shortcut_labels() {
+        let mr = sample_mr();
+        let key = mr.storage_key();
+        let mut app = App {
+            key_layout: crate::ui::keyboard::KeyLayout::Russian,
+            confirm: Some(ConfirmOverwrite {
+                key,
+                mode: PromptMode::Blank,
+            }),
+            ..base_app()
+        };
+        app.items.push(mr);
+        let mut term = ratatui::Terminal::new(ratatui::backend::TestBackend::new(118, 46)).unwrap();
+        term.draw(|f| render_confirm(f, &app)).unwrap();
+        let dump = format!("{}", term.backend());
+        assert!(dump.contains("\u{43d} / enter confirm"), "{dump}");
+        assert!(dump.contains("\u{442} / esc cancel"), "{dump}");
     }
 
     #[test]

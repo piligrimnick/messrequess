@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 use ratatui::layout::Rect;
 use serde_json::json;
 
+use super::keyboard::KeyLayout;
 use super::layout::{navigate, pack_rows, CardLayout, Direction};
 use super::menu::MenuItem;
 use crate::forge::{Forge, GitlabForge};
@@ -94,6 +95,9 @@ pub(crate) struct App {
     pub(crate) notice: Option<String>,
     // the terminal tells Shift+Enter apart (kitty protocol)
     pub(crate) kbd_enhanced: bool,
+    // Inferred from recognized character input; terminals expose no portable
+    // API for querying the operating system's current keyboard layout.
+    pub(crate) key_layout: KeyLayout,
     // whether the TUI claimed the mouse this run (messreq-9td) — off by
     // default (see `config` module doc for the copy-paste trade-off), read
     // once at startup since it never changes mid-run
@@ -168,6 +172,7 @@ impl App {
             confirm: None,
             notice,
             kbd_enhanced: false,
+            key_layout: KeyLayout::Latin,
             mouse_enabled: crate::config::mouse_enabled(),
             card_rects: vec![],
             read_only,
@@ -528,6 +533,7 @@ mod tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            key_layout: KeyLayout::Latin,
             mouse_enabled: false,
             card_rects: vec![],
             read_only: false,

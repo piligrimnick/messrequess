@@ -3,13 +3,14 @@
 
 mod app;
 mod card;
+mod keyboard;
 pub(crate) mod layout;
 mod menu;
 mod popup;
 mod screen;
 
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -17,6 +18,7 @@ use ratatui::crossterm::event::{
 
 use app::{App, ConfirmOverwrite, PromptMenu};
 use card::truncate;
+use keyboard::{current_layout, normalize};
 use layout::Direction;
 use menu::{decide, MenuAction, MenuItem};
 use screen::ui;
@@ -31,6 +33,7 @@ use crate::work::{
 };
 
 const REFRESH_SECS: u64 = 300;
+const KEY_LAYOUT_POLL_SECS: u64 = 1;
 /// The frame `--snapshot` renders, in columns and rows.
 const SNAPSHOT_W: u16 = 118;
 const SNAPSHOT_H: u16 = 46;
@@ -325,6 +328,9 @@ fn handle_mouse(app: &mut App, m: MouseEvent) {
 }
 
 fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Result<()> {
+    let mut layout_checked = Instant::now()
+        .checked_sub(Duration::from_secs(KEY_LAYOUT_POLL_SECS))
+        .unwrap_or_else(Instant::now);
     loop {
         // The signal to `--notify` that a dashboard is open. The TUI sends
         // its own notifications now (messreq-dm4.1) and no longer needs the
@@ -340,6 +346,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
         // reload (messreq-pmm). Budgeted, and never in the draw path: see
         // `App::poll_reviews`.
         app.poll_reviews();
+        if layout_checked.elapsed() >= Duration::from_secs(KEY_LAYOUT_POLL_SECS) {
+            if let Some(layout) = current_layout() {
+                app.key_layout = layout;
+            }
+            layout_checked = Instant::now();
+        }
         if app.is_loading() {
             app.spinner = app.spinner.wrapping_add(1);
         }
@@ -354,6 +366,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                     if k.kind != KeyEventKind::Press {
                         continue;
                     }
+                    let code = normalize(k.code, &mut app.key_layout);
 
                     // The error popup grabs the input: any key closes it.
                     if app.notice.is_some() {
@@ -363,7 +376,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
 
                     // The overwrite-confirmation popup grabs the input.
                     if app.confirm.is_some() {
-                        match k.code {
+                        match code {
                             KeyCode::Char('y') | KeyCode::Enter => {
                                 if let Some(ConfirmOverwrite { key, mode }) = app.confirm.take() {
                                     // Re-resolve by key: a reload could have
@@ -388,7 +401,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
 
                     // The open prompt-mode menu grabs the input.
                     if app.menu.is_some() {
-                        match k.code {
+                        match code {
                             KeyCode::Esc | KeyCode::Char('q') => app.menu = None,
                             KeyCode::Down | KeyCode::Char('j') => {
                                 if let Some(m) = &mut app.menu {
@@ -424,7 +437,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, app: &mut App) -> std::io::Resul
                         continue;
                     }
 
-                    match k.code {
+                    match code {
                         KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
                         // Two axes, not one (the messreq-2lx follow-up):
                         // ↑/↓ move a row and ←/→ move inside it, which in
@@ -629,6 +642,7 @@ mod tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            key_layout: crate::ui::keyboard::KeyLayout::Latin,
             mouse_enabled: true,
             card_rects: vec![(0, Rect::new(0, 2, 40, 4)), (1, Rect::new(0, 7, 40, 4))],
             read_only: false,

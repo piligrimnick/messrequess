@@ -236,6 +236,7 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     // current one is what the user is looking at, and the hint is worth more
     // as an answer to "what happens if I press this".
     let next_layout = app.layout.next().as_str();
+    let key = |latin| app.key_layout.label(latin);
     // The line is drawn in a 110-cell strip (118 columns of frame, minus the
     // border and its padding on both sides), and `⇧P review` was the hint
     // that ran it out of room: the mouse variant is three cells longer than
@@ -245,9 +246,9 @@ pub(crate) fn ui(f: &mut Frame, app: &mut App) {
     // (`App::start_reload`). `the_footer_hints_the_review_key_and_still_fits_the_frame`
     // guards the fit in both variants, on the longest layout name.
     let footer_text = if app.mouse_enabled {
-        format!("↑↓←→/🖱 select  ↵ Claude  ⇧↵/p mode  o URL  ⇧P review  m seen  x forget  d drafts  v {next_layout}  r reload  q quit")
+        format!("↑↓←→/🖱 select  ↵ Claude  ⇧↵/{} mode  {} URL  ⇧{} review  {} seen  {} forget  {} drafts  {} {next_layout}  {} reload  {} quit", key('p'), key('o'), key('P'), key('m'), key('x'), key('d'), key('v'), key('r'), key('q'))
     } else {
-        format!("↑↓←→ select  ↵ Claude  ⇧↵/p mode  o URL  ⇧P review  m seen  x forget  d drafts  v {next_layout}  r reload  q quit")
+        format!("↑↓←→ select  ↵ Claude  ⇧↵/{} mode  {} URL  ⇧{} review  {} seen  {} forget  {} drafts  {} {next_layout}  {} reload  {} quit", key('p'), key('o'), key('P'), key('m'), key('x'), key('d'), key('v'), key('r'), key('q'))
     };
     let footer = Line::from(vec![Span::styled(
         footer_text,
@@ -502,6 +503,7 @@ mod render_tests {
             confirm: None,
             notice: None,
             kbd_enhanced: false,
+            key_layout: crate::ui::keyboard::KeyLayout::Latin,
             mouse_enabled: false,
             card_rects: vec![],
             read_only: false,
@@ -789,6 +791,16 @@ mod render_tests {
         app.cycle_layout();
         let text = render(&mut app, 118, 46);
         assert!(text.contains("v list"), "{text}");
+    }
+
+    #[test]
+    fn the_footer_uses_the_inferred_russian_shortcut_labels() {
+        let mut app = app(1, 0, CardLayout::List);
+        app.key_layout = crate::ui::keyboard::KeyLayout::Russian;
+        let text = render(&mut app, 118, 46);
+        assert!(text.contains("\u{449} URL"), "{text}");
+        assert!(text.contains("\u{439} quit"), "{text}");
+        assert!(text.contains("\u{417} review"), "{text}");
     }
 
     #[test]

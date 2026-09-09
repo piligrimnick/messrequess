@@ -55,10 +55,10 @@ This document uses the abbreviation MR for a merge request.
 
 One person wrote this tool, and made it public because other people might find it useful. It is not a product, and it does not operate in all conditions. It needs a specific setup. This section tells you what that setup is.
 
-**The version is 0.2.0, and that number is accurate.** One person uses this tool each day, on one machine. That is the full test. The config keys, the names of the prompt templates, the formats of the state files, and the command-line flags can change with no warning. There is no changelog file; each tag carries its notes on its GitHub release page. Tags exist, so you can install one instead of the moving branch:
+**The version is 0.2.1, and that number is accurate.** One person uses this tool each day, on one machine. That is the full test. The config keys, the names of the prompt templates, the formats of the state files, and the command-line flags can change with no warning. There is no changelog file; each tag carries its notes on its GitHub release page. Tags exist, so you can install one instead of the moving branch:
 
 ```bash
-cargo install --git https://github.com/piligrimnick/messrequess --tag v0.2.0
+cargo install --git https://github.com/piligrimnick/messrequess --tag v0.2.1
 ```
 
 If you do not give `--tag`, cargo builds the current content of the `main` branch.
@@ -245,6 +245,13 @@ The tool sends the `resume` template when you open a session again that no longe
 Your `~/.config/messreq/prompts/` directory can contain `.txt` files from an earlier version of this format; the issue `messreq-6x9` changed the format. Those files continue to operate: the tool looks for a `.md` file first, and it uses the `.txt` file if there is no `.md` file with that name. The tool changes and deletes nothing automatically. The command `--dump-prompts` writes no `<name>.md` default file adjacent to a `<name>.txt` file that you edited. The tool would then stop reading your `.txt` file.
 
 ## Keys
+
+Character shortcuts follow their physical QWERTY positions in both the Latin
+and Russian keyboard layouts. On macOS, the footer follows the active system
+input source and updates within one second after it changes. On other systems,
+where terminals do not expose the operating system's active input source, the
+footer starts with Latin labels and infers the layout from the latest character
+shortcut. Arrow keys, Enter, and Esc are independent of the layout.
 
 | Key | Action |
 |---|---|
